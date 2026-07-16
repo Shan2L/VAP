@@ -2174,11 +2174,11 @@
         view.classList.toggle("active", isActive);
         view.hidden = !isActive;
       });
-      localStorage.setItem(WORKSPACE_TAB_KEY, normalizedTabName);
     }
 
     function restoreWorkspaceTab() {
-      switchWorkspace(localStorage.getItem(WORKSPACE_TAB_KEY) || "config");
+      localStorage.removeItem(WORKSPACE_TAB_KEY);
+      switchWorkspace("config");
     }
 
     function setAgentUnlocked(isUnlocked, statusText = "") {

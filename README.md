@@ -78,6 +78,7 @@ Configure the subscription key before starting the server:
 export VAP_LLM_SUBSCRIPTION_KEY="..."
 export VAP_LLM_BASE_URL="https://llm-api.amd.com/OpenAI"
 export VAP_LLM_MODEL="gpt-5.5"
+export VAP_AGENT_MAX_TOOL_ROUNDS=8
 vap start
 ```
 

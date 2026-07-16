@@ -12,6 +12,7 @@ AGENT_BASE_URL = os.getenv("VAP_LLM_BASE_URL", "https://llm-api.amd.com/OpenAI")
 AGENT_MODEL = os.getenv("VAP_LLM_MODEL", "gpt-5.5")
 AGENT_ENV_KEY_NAME = "VAP_LLM_SUBSCRIPTION_KEY"
 AGENT_TIMEOUT_SEC = float(os.getenv("VAP_LLM_TIMEOUT_SEC", "180"))
+AGENT_MAX_TOOL_ROUNDS = int(os.getenv("VAP_AGENT_MAX_TOOL_ROUNDS", "8"))
 
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -123,7 +124,7 @@ class VAPAgentRuntime:
         ]
 
         tool_events: list[dict[str, Any]] = []
-        for _ in range(4):
+        for _ in range(AGENT_MAX_TOOL_ROUNDS):
             response = self._chat_completion(
                 client,
                 messages=loop_messages,
@@ -185,7 +186,10 @@ class VAPAgentRuntime:
             "type": "message",
             "message": {
                 "role": "assistant",
-                "content": "I reached the tool-call limit while working on this request.",
+                "content": (
+                    f"I reached the tool-call limit ({AGENT_MAX_TOOL_ROUNDS}) while working on this request. "
+                    "Try asking for a narrower analysis, or increase VAP_AGENT_MAX_TOOL_ROUNDS."
+                ),
             },
             "tool_events": tool_events,
             "model": AGENT_MODEL,
@@ -205,7 +209,7 @@ class VAPAgentRuntime:
             *messages,
         ]
 
-        for _ in range(4):
+        for _ in range(AGENT_MAX_TOOL_ROUNDS):
             stream = self._chat_completion(
                 client,
                 messages=loop_messages,
@@ -306,7 +310,10 @@ class VAPAgentRuntime:
             "type": "done",
             "message": {
                 "role": "assistant",
-                "content": "I reached the tool-call limit while working on this request.",
+                "content": (
+                    f"I reached the tool-call limit ({AGENT_MAX_TOOL_ROUNDS}) while working on this request. "
+                    "Try asking for a narrower analysis, or increase VAP_AGENT_MAX_TOOL_ROUNDS."
+                ),
             },
             "model": AGENT_MODEL,
             "key_source": key_source,
@@ -482,8 +489,10 @@ class VAPAgentRuntime:
             "trace artifacts, use the safe download artifact tool instead of "
             "inventing file paths. For detailed trace analysis, prefer Perfetto "
             "SQL tools over raw trace previews. Prefer the TorchProfilerTraceSkill "
-            "workflow tool for trace reports, then use individual Perfetto SQL "
-            "queries only when you need deeper evidence.\n\nAvailable VAP tools:\n"
+            "workflow tool for trace reports. For broad trace analysis, call "
+            "run_torchprofiler_skill once with workflow=full_report instead of "
+            "issuing many individual SQL tools. Use individual Perfetto SQL "
+            "queries only when the user asks for deeper evidence.\n\nAvailable VAP tools:\n"
             f"{tool_descriptions}"
         )
 
