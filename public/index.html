@@ -17,19 +17,19 @@
   <style>
     :root {
       color-scheme: dark;
-      --bg: #080719;
-      --panel: rgba(13, 19, 43, 0.82);
-      --panel-2: rgba(16, 25, 56, 0.74);
-      --input: rgba(4, 11, 28, 0.72);
-      --line: rgba(34, 211, 238, 0.28);
-      --line-2: rgba(236, 72, 153, 0.32);
-      --text: #eef7ff;
-      --muted: #97a8c6;
-      --accent: #22d3ee;
-      --accent-2: #ec4899;
-      --danger: #fb7185;
-      --ok: #34d399;
-      --warn: #facc15;
+      --bg: #050814;
+      --panel: rgba(10, 17, 34, 0.88);
+      --panel-2: rgba(13, 24, 48, 0.78);
+      --input: rgba(3, 9, 22, 0.78);
+      --line: rgba(56, 189, 248, 0.22);
+      --line-2: rgba(129, 140, 248, 0.24);
+      --text: #e6f1ff;
+      --muted: #8ea3c2;
+      --accent: #38bdf8;
+      --accent-2: #a78bfa;
+      --danger: #f87171;
+      --ok: #2dd4bf;
+      --warn: #fbbf24;
     }
 
     :root[data-theme="light"] {
@@ -55,10 +55,10 @@
       margin: 0;
       min-height: 100vh;
       background:
-        radial-gradient(circle at 14% 8%, rgba(34, 211, 238, 0.26), transparent 27%),
-        radial-gradient(circle at 86% 6%, rgba(236, 72, 153, 0.26), transparent 30%),
-        radial-gradient(circle at 62% 86%, rgba(168, 85, 247, 0.24), transparent 28%),
-        linear-gradient(135deg, #070617 0%, #11143a 45%, #190b2d 100%);
+        radial-gradient(circle at 12% 8%, rgba(56, 189, 248, 0.18), transparent 30%),
+        radial-gradient(circle at 88% 10%, rgba(129, 140, 248, 0.16), transparent 32%),
+        radial-gradient(circle at 58% 90%, rgba(14, 165, 233, 0.10), transparent 30%),
+        linear-gradient(135deg, #030712 0%, #07111f 44%, #0f1029 100%);
       color: var(--text);
       font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px;
@@ -79,8 +79,8 @@
       inset: 0;
       pointer-events: none;
       background-image:
-        linear-gradient(rgba(34, 211, 238, 0.08) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(236, 72, 153, 0.06) 1px, transparent 1px);
+        linear-gradient(rgba(56, 189, 248, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(129, 140, 248, 0.045) 1px, transparent 1px);
       background-size: 34px 34px;
       mask-image: linear-gradient(to bottom, rgba(0,0,0,0.72), transparent 82%);
     }
@@ -102,9 +102,9 @@
       gap: 16px;
       padding: 14px 20px;
       border-bottom: 1px solid var(--line);
-      background: rgba(7, 10, 28, 0.78);
+      background: rgba(3, 9, 22, 0.82);
       backdrop-filter: blur(16px);
-      box-shadow: 0 8px 36px rgba(34, 211, 238, 0.12), 0 0 24px rgba(236, 72, 153, 0.10);
+      box-shadow: 0 8px 32px rgba(2, 6, 23, 0.34), 0 0 20px rgba(56, 189, 248, 0.08);
     }
 
     :root[data-theme="light"] header {
@@ -114,16 +114,16 @@
 
     h1 {
       margin: 0;
-      font-size: 28px;
+      font-size: 36px;
       font-weight: 900;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      background: linear-gradient(90deg, #67e8f9 0%, #a78bfa 45%, #fb7185 100%);
+      background: linear-gradient(90deg, #7dd3fc 0%, #a5b4fc 52%, #c4b5fd 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
-      filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.5));
-      text-shadow: 0 0 24px rgba(236, 72, 153, 0.42);
+      filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.34));
+      text-shadow: 0 0 20px rgba(129, 140, 248, 0.22);
     }
 
     :root[data-theme="light"] h1 {
@@ -150,11 +150,11 @@
       display: inline-flex;
       align-items: center;
       justify-content: space-between;
-      border: 1px solid rgba(34, 211, 238, 0.34);
+      border: 1px solid rgba(56, 189, 248, 0.26);
       border-radius: 999px;
       padding: 0 9px;
       background:
-        linear-gradient(135deg, rgba(10, 18, 44, 0.96), rgba(30, 27, 75, 0.92));
+        linear-gradient(135deg, rgba(5, 12, 28, 0.96), rgba(20, 26, 52, 0.92));
       box-shadow:
         0 8px 18px rgba(0, 0, 0, 0.18),
         inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -163,9 +163,9 @@
     }
 
     .theme-toggle:hover {
-      border-color: rgba(34, 211, 238, 0.66);
+      border-color: rgba(56, 189, 248, 0.48);
       box-shadow:
-        0 0 18px rgba(34, 211, 238, 0.18),
+        0 0 18px rgba(56, 189, 248, 0.12),
         0 8px 20px rgba(0, 0, 0, 0.20),
         inset 0 1px 0 rgba(255, 255, 255, 0.10);
     }
@@ -226,7 +226,7 @@
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 8px 12px;
-      background: rgba(10, 18, 44, 0.86);
+      background: rgba(11, 18, 32, 0.88);
       color: var(--text);
       font: inherit;
       font-size: 13px;
@@ -262,8 +262,8 @@
 
     button:hover:not(:disabled) {
       border-color: var(--accent);
-      background: rgba(18, 30, 72, 0.92);
-      box-shadow: 0 0 18px rgba(34, 211, 238, 0.2), 0 6px 18px rgba(236, 72, 153, 0.12);
+      background: rgba(17, 29, 52, 0.94);
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.14), 0 6px 18px rgba(15, 23, 42, 0.24);
     }
 
     :root[data-theme="light"] button {
@@ -305,9 +305,9 @@
 
     button.primary {
       border-color: var(--accent);
-      background: linear-gradient(135deg, #06b6d4, #8b5cf6 52%, #ec4899);
+      background: linear-gradient(135deg, #0284c7, #4f46e5 58%, #7c3aed);
       color: #ffffff;
-      box-shadow: 0 0 22px rgba(34, 211, 238, 0.28), 0 8px 22px rgba(236, 72, 153, 0.18);
+      box-shadow: 0 0 18px rgba(56, 189, 248, 0.20), 0 8px 22px rgba(79, 70, 229, 0.16);
     }
 
     :root[data-theme="light"] button.primary {
@@ -382,8 +382,8 @@
       display: grid;
       grid-template-columns: minmax(420px, 2fr) 12px minmax(460px, 1fr);
       gap: 12px;
-      width: min(1640px, calc(100% - 32px));
-      margin: 16px auto;
+      width: calc(100% - 16px);
+      margin: 8px auto;
       align-items: start;
     }
 
@@ -439,8 +439,611 @@
 
     .form {
       display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 0;
+      min-width: 0;
+      align-items: stretch;
+    }
+
+    .workspace-tabs {
+      display: grid;
+      grid-template-rows: repeat(2, minmax(0, 1fr));
+      gap: 0;
+      width: 100%;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      position: sticky;
+      top: 74px;
+      height: calc(100vh - 90px);
+      background: transparent;
+      box-shadow: none;
+      z-index: 1;
+    }
+
+    .workspace-tab {
+      min-height: 0;
+      height: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      padding: 10px 8px;
+      background: rgba(15, 23, 42, 0.32);
+      box-shadow: none;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+      text-align: center;
+    }
+
+    .workspace-tab:first-child {
+      border-radius: 14px 0 0 0;
+      border-bottom: none;
+    }
+
+    .workspace-tab:last-child {
+      border-radius: 0 0 0 14px;
+    }
+
+    .workspace-tab.active {
+      background:
+        linear-gradient(135deg, rgba(34, 211, 238, 0.28), rgba(139, 92, 246, 0.18));
+      border-color: rgba(34, 211, 238, 0.58);
+      color: var(--text);
+      box-shadow:
+        inset 3px 0 0 var(--accent),
+        0 0 18px rgba(34, 211, 238, 0.10);
+    }
+
+    .workspace-tab:hover:not(:disabled) {
+      transform: none;
+      border-color: rgba(34, 211, 238, 0.38);
+      box-shadow: 0 0 16px rgba(34, 211, 238, 0.10);
+    }
+
+    .workspace-view {
+      display: none;
       gap: 14px;
       min-width: 0;
+      min-height: 0;
+      padding: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .workspace-view.active {
+      display: grid;
+    }
+
+    .workspace-view > :first-child {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      border-top-right-radius: 10px;
+    }
+
+    .agent-panel {
+      height: calc(100vh - 90px);
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      overflow: hidden;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(236, 72, 153, 0.08);
+    }
+
+    .agent-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(90deg, rgba(34, 211, 238, 0.13), rgba(236, 72, 153, 0.10));
+    }
+
+    .agent-head h2 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .agent-status {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .agent-status.unlocked {
+      border-color: rgba(52, 211, 153, 0.42);
+      color: var(--ok);
+    }
+
+    .agent-head-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .agent-body {
+      min-height: 0;
+      display: grid;
+      overflow: hidden;
+    }
+
+    .agent-unlock {
+      display: none;
+      place-items: center;
+      padding: 28px;
+    }
+
+    .agent-unlock.active {
+      display: grid;
+    }
+
+    .agent-unlock-card {
+      width: min(520px, 100%);
+      display: grid;
+      gap: 12px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-2);
+    }
+
+    .agent-unlock-card h3 {
+      margin: 0;
+      font-size: 17px;
+    }
+
+    .agent-chat {
+      min-height: 0;
+      display: none;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+
+    .agent-chat.active {
+      display: grid;
+    }
+
+    .agent-templates {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 12px 14px 0;
+    }
+
+    .agent-template {
+      border-radius: 999px;
+      padding: 6px 10px;
+      color: var(--muted);
+      font-size: 12px;
+      background: rgba(15, 23, 42, 0.44);
+    }
+
+    .agent-template:hover:not(:disabled) {
+      color: var(--text);
+    }
+
+    .agent-messages-wrap {
+      position: relative;
+      min-height: 0;
+      display: grid;
+      overflow: hidden;
+    }
+
+    .agent-messages {
+      min-height: 0;
+      height: 100%;
+      max-height: 100%;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .agent-scroll-bottom {
+      position: absolute;
+      right: 18px;
+      bottom: 18px;
+      width: 38px;
+      height: 38px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid rgba(56, 189, 248, 0.26);
+      background: rgba(15, 23, 42, 0.48);
+      color: var(--accent);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+      z-index: 3;
+    }
+
+    .agent-scroll-bottom.show {
+      display: inline-flex;
+    }
+
+    .agent-scroll-bottom .button-icon {
+      margin: 0;
+    }
+
+    .agent-message {
+      width: fit-content;
+      max-width: min(760px, 86%);
+      position: relative;
+      padding: 12px 14px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.58);
+      box-shadow:
+        0 10px 26px rgba(0, 0, 0, 0.16),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      white-space: pre-wrap;
+      line-height: 1.58;
+      overflow-wrap: anywhere;
+    }
+
+    .agent-message.user {
+      justify-self: end;
+      border-bottom-right-radius: 5px;
+      border-color: rgba(56, 189, 248, 0.34);
+      background:
+        linear-gradient(135deg, rgba(2, 132, 199, 0.92), rgba(79, 70, 229, 0.84));
+      color: #ffffff;
+      box-shadow:
+        0 12px 26px rgba(2, 132, 199, 0.18),
+        0 3px 10px rgba(79, 70, 229, 0.14),
+        inset 0 1px 0 rgba(255, 255, 255, 0.20);
+    }
+
+    .agent-message.assistant {
+      justify-self: start;
+      border-bottom-left-radius: 5px;
+      border-color: rgba(56, 189, 248, 0.18);
+      background:
+        linear-gradient(180deg, rgba(15, 23, 42, 0.80), rgba(15, 23, 42, 0.58));
+    }
+
+    .agent-message.tool {
+      justify-self: start;
+      max-width: min(560px, 76%);
+      padding: 6px 10px;
+      border-radius: 999px;
+      border-color: rgba(148, 163, 184, 0.14);
+      background: rgba(148, 163, 184, 0.08);
+      color: rgba(151, 168, 198, 0.86);
+      box-shadow: none;
+      font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .agent-tool-group {
+      justify-self: start;
+      max-width: min(620px, 82%);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 12px;
+      background: rgba(148, 163, 184, 0.07);
+      color: rgba(151, 168, 198, 0.88);
+      font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+      font-size: 11px;
+      overflow: hidden;
+    }
+
+    .agent-tool-group summary {
+      padding: 7px 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .agent-tool-group-body {
+      display: grid;
+      gap: 4px;
+      padding: 0 10px 8px;
+    }
+
+    .agent-tool-group-line {
+      opacity: 0.86;
+    }
+
+    .agent-download-card {
+      justify-self: start;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      max-width: min(620px, 82%);
+      padding: 10px 12px;
+      border: 1px solid rgba(34, 211, 238, 0.24);
+      border-radius: 12px;
+      background: rgba(34, 211, 238, 0.08);
+      color: var(--text);
+    }
+
+    .agent-message.approval {
+      justify-self: stretch;
+      width: auto;
+      max-width: none;
+      border-radius: 14px;
+      border-color: rgba(250, 204, 21, 0.46);
+      background:
+        linear-gradient(180deg, rgba(113, 63, 18, 0.30), rgba(69, 26, 3, 0.22));
+    }
+
+    .agent-approval-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .agent-role {
+      display: block;
+      margin-bottom: 6px;
+      color: rgba(151, 168, 198, 0.82);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .agent-message.user .agent-role {
+      color: rgba(255, 255, 255, 0.70);
+    }
+
+    .agent-markdown {
+      display: grid;
+      gap: 8px;
+    }
+
+    .agent-markdown p {
+      margin: 0;
+    }
+
+    .agent-markdown h1,
+    .agent-markdown h2,
+    .agent-markdown h3,
+    .agent-markdown h4 {
+      margin: 2px 0;
+      color: var(--text);
+      line-height: 1.25;
+      font-weight: 800;
+    }
+
+    .agent-markdown h1 {
+      font-size: 22px;
+    }
+
+    .agent-markdown h2 {
+      font-size: 19px;
+    }
+
+    .agent-markdown h3 {
+      font-size: 16px;
+    }
+
+    .agent-markdown h4 {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .agent-markdown hr {
+      width: 100%;
+      height: 1px;
+      margin: 2px 0;
+      border: none;
+      background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.40), transparent);
+    }
+
+    .agent-markdown ul,
+    .agent-markdown ol {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    .agent-markdown li {
+      margin: 3px 0;
+    }
+
+    .agent-markdown pre {
+      margin: 0;
+      overflow: auto;
+      border: 1px solid rgba(34, 211, 238, 0.22);
+      border-radius: 12px;
+      padding: 12px 14px;
+      background:
+        linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.90));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        0 8px 22px rgba(0, 0, 0, 0.18);
+      white-space: pre;
+      scrollbar-width: thin;
+    }
+
+    .agent-markdown code {
+      color: #dffbff;
+      border-radius: 6px;
+      padding: 2px 6px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(15, 23, 42, 0.48);
+      font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .agent-markdown pre code {
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: #dbeafe;
+      font-size: 12.5px;
+      line-height: 1.65;
+    }
+
+    .agent-markdown a {
+      color: var(--accent);
+    }
+
+    .agent-markdown table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 10px;
+      font-size: 13px;
+    }
+
+    .agent-markdown th,
+    .agent-markdown td {
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .agent-markdown th {
+      background: rgba(34, 211, 238, 0.12);
+      color: var(--text);
+      font-weight: 750;
+    }
+
+    .agent-markdown tr:last-child td {
+      border-bottom: none;
+    }
+
+    :root[data-theme="light"] .agent-message {
+      border-color: rgba(37, 99, 235, 0.14);
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    :root[data-theme="light"] .agent-message.assistant {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(239, 246, 255, 0.92));
+    }
+
+    :root[data-theme="light"] .agent-markdown pre {
+      border-color: rgba(37, 99, 235, 0.18);
+      background:
+        linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(239, 246, 255, 0.94));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.80),
+        0 8px 20px rgba(15, 23, 42, 0.08);
+    }
+
+    :root[data-theme="light"] .agent-markdown code {
+      color: #1e3a8a;
+      border-color: rgba(37, 99, 235, 0.12);
+      background: rgba(219, 234, 254, 0.72);
+    }
+
+    :root[data-theme="light"] .agent-markdown pre code {
+      color: #1e293b;
+      background: transparent;
+    }
+
+    :root[data-theme="light"] .agent-message.user {
+      border-color: rgba(37, 99, 235, 0.34);
+      background:
+        linear-gradient(135deg, #2563eb, #7c3aed);
+      color: #ffffff;
+      box-shadow:
+        0 12px 24px rgba(37, 99, 235, 0.20),
+        inset 0 1px 0 rgba(255, 255, 255, 0.24);
+    }
+
+    :root[data-theme="light"] .agent-message.user .agent-role {
+      color: rgba(255, 255, 255, 0.72);
+    }
+
+    :root[data-theme="light"] .agent-message.tool {
+      background: rgba(100, 116, 139, 0.08);
+      color: #64748b;
+      border-color: rgba(100, 116, 139, 0.14);
+    }
+
+    :root[data-theme="light"] .agent-tool-group {
+      background: rgba(100, 116, 139, 0.07);
+      color: #64748b;
+      border-color: rgba(100, 116, 139, 0.14);
+    }
+
+    :root[data-theme="light"] .agent-message.approval {
+      background:
+        linear-gradient(180deg, rgba(255, 251, 235, 0.98), rgba(254, 243, 199, 0.86));
+      border-color: rgba(180, 83, 9, 0.22);
+    }
+
+    @media (max-width: 760px) {
+      .form {
+        grid-template-columns: 1fr;
+      }
+
+      .workspace-tabs {
+        position: static;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: none;
+        height: auto;
+      }
+
+      .workspace-tab {
+        min-height: auto;
+      }
+
+      .workspace-tab:first-child {
+        border-radius: 14px 0 0 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .workspace-tab:last-child {
+        border-radius: 0 14px 14px 0;
+      }
+
+      .workspace-view {
+        padding-left: 0;
+        border-left: none;
+      }
+
+      .agent-panel {
+        height: 620px;
+        max-height: calc(100vh - 180px);
+      }
+    }
+
+    .agent-compose {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.46);
+    }
+
+    .agent-input {
+      min-height: 72px;
+      max-height: 180px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 10px;
+      background: var(--input);
+      color: var(--text);
+      font: inherit;
+      line-height: 1.45;
+    }
+
+    .agent-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.13);
     }
 
     .note {
@@ -458,7 +1061,7 @@
       border-radius: 10px;
       background: var(--panel);
       overflow: hidden;
-      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(236, 72, 153, 0.08);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(148, 163, 184, 0.05);
       backdrop-filter: blur(14px);
       transition: border-color 0.26s ease, box-shadow 0.26s ease, transform 0.26s ease;
     }
@@ -468,7 +1071,7 @@
     }
 
     section:hover {
-      border-color: rgba(34, 211, 238, 0.5);
+      border-color: rgba(56, 189, 248, 0.38);
     }
 
     section.disabled-panel {
@@ -482,7 +1085,7 @@
     }
 
     section.disabled-panel > h2 {
-      background: rgba(30, 41, 59, 0.62);
+      background: rgba(15, 23, 42, 0.68);
       color: #cbd5e1;
     }
 
@@ -499,7 +1102,7 @@
       margin: 0;
       padding: 12px 15px;
       border-bottom: 1px solid var(--line);
-      background: linear-gradient(90deg, rgba(34, 211, 238, 0.13), rgba(236, 72, 153, 0.10));
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.10), rgba(129, 140, 248, 0.08));
       font-size: 15px;
       font-weight: 700;
     }
@@ -693,12 +1296,12 @@
     }
 
     .log-item:hover {
-      border-color: rgba(34, 211, 238, 0.5);
+      border-color: rgba(56, 189, 248, 0.38);
     }
 
     .log-item.active {
-      border-color: rgba(34, 211, 238, 0.62);
-      box-shadow: 0 0 16px rgba(34, 211, 238, 0.12), inset 0 0 0 1px rgba(236, 72, 153, 0.08);
+      border-color: rgba(56, 189, 248, 0.48);
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.10), inset 0 0 0 1px rgba(129, 140, 248, 0.06);
     }
 
     :root[data-theme="light"] .log-item.active {
@@ -713,7 +1316,7 @@
       gap: 10px;
       padding: 11px 14px;
       border: none;
-      background: linear-gradient(90deg, rgba(34, 211, 238, 0.12), rgba(236, 72, 153, 0.10));
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.10), rgba(129, 140, 248, 0.08));
       color: var(--text);
       text-align: left;
       cursor: pointer;
@@ -721,7 +1324,7 @@
 
     .log-toggle:hover {
       box-shadow: none;
-      background: linear-gradient(90deg, rgba(34, 211, 238, 0.18), rgba(236, 72, 153, 0.15));
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.15), rgba(129, 140, 248, 0.12));
     }
 
     .log-title {
@@ -1059,8 +1662,8 @@
       }
 
       main {
-        width: calc(100% - 20px);
-        margin: 10px auto;
+        width: calc(100% - 16px);
+        margin: 8px auto;
       }
 
       .grid,
@@ -1075,7 +1678,7 @@
 </head>
 <body>
   <header>
-    <h1>VAP CONTROL</h1>
+    <h1>VAP</h1>
     <div class="actions">
       <button class="theme-toggle" id="btn-theme" type="button" aria-label="Toggle theme" aria-pressed="false" title="Switch theme">
         <span class="theme-icon sun-icon" aria-hidden="true">☀</span>
@@ -1095,23 +1698,25 @@
 
   <main>
     <div class="form">
-      <div class="note">
-        Edit the form, download the generated JSON if needed, then run with a temporary config. Current run logs are shown on the right.
+      <div class="workspace-tabs" role="tablist" aria-label="Workspace">
+        <button class="workspace-tab active" id="tab-config" type="button" role="tab" aria-selected="true" aria-controls="config-workspace" data-workspace-tab="config"><span class="button-icon" aria-hidden="true">▦</span>Config</button>
+        <button class="workspace-tab" id="tab-agent" type="button" role="tab" aria-selected="false" aria-controls="agent-workspace" data-workspace-tab="agent"><span class="button-icon" aria-hidden="true">✦</span>Agent</button>
       </div>
 
-      <section class="config-panel active">
-        <h2>Basic Config</h2>
-        <div class="section-body">
-          <div class="grid">
-            <label>Model Name<input id="model_name" placeholder="Qwen3-0.6B" /></label>
-            <label>Model Root<input id="model_path" placeholder="/path/to/models" /></label>
-            <label class="wide-field">Docker Image<input id="image_name" placeholder="registry/image" /></label>
-            <label>Image Tag<input id="image_tag" placeholder="latest" /></label>
+      <div class="workspace-view active" id="config-workspace" role="tabpanel" aria-labelledby="tab-config">
+        <section class="config-panel active">
+          <h2>Basic Config</h2>
+          <div class="section-body">
+            <div class="grid">
+              <label>Model Name<input id="model_name" placeholder="Qwen3-0.6B" /></label>
+              <label>Model Root<input id="model_path" placeholder="/path/to/models" /></label>
+              <label class="wide-field">Docker Image<input id="image_name" placeholder="registry/image" /></label>
+              <label>Image Tag<input id="image_tag" placeholder="latest" /></label>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="config-panel disabled-panel">
+        <section class="config-panel disabled-panel">
         <h2>Distributed Config</h2>
         <div class="section-body">
           <p class="hint">Editing is not supported yet: <code>main.py</code> currently disables <code>distributed_cfg</code> after loading the config.</p>
@@ -1120,9 +1725,9 @@
           <div class="readonly-row"><strong>head_node</strong><div class="readonly-value" id="dist-head-node"></div></div>
           <div class="readonly-row"><strong>worker_nodes</strong><div class="readonly-value" id="dist-worker-nodes"></div></div>
         </div>
-      </section>
+        </section>
 
-      <section class="config-panel">
+        <section class="config-panel">
         <h2>Container Config</h2>
         <div class="section-body">
           <p class="hint">GPU Devices</p>
@@ -1137,34 +1742,77 @@
           <div class="list-editor" id="env-list"></div>
           <button class="small add-row" type="button" id="add-env"><span class="button-icon" aria-hidden="true">＋</span>Add Environment Variable</button>
         </div>
-      </section>
+        </section>
 
-      <section class="config-panel">
+        <section class="config-panel">
         <h2>vLLM Deploy Config</h2>
         <div class="section-body">
           <p class="hint">Use <code>null</code> for flag-only arguments. <code>--host</code> and <code>--port</code> are synchronized with Benchmark config.</p>
           <div class="kv-list" id="deploy-kv"></div>
           <button class="small add-row" type="button" data-add-kv="deploy-kv"><span class="button-icon" aria-hidden="true">＋</span>Add Argument</button>
         </div>
-      </section>
+        </section>
 
-      <section class="config-panel">
+        <section class="config-panel">
         <h2>Profiler Config</h2>
         <div class="section-body">
           <p class="hint">Use <code>true</code> / <code>false</code> for booleans. Rows can be added or removed freely.</p>
           <div class="kv-list" id="profiler-kv"></div>
           <button class="small add-row" type="button" data-add-kv="profiler-kv"><span class="button-icon" aria-hidden="true">＋</span>Add Argument</button>
         </div>
-      </section>
+        </section>
 
-      <section class="config-panel">
+        <section class="config-panel">
         <h2>Benchmark Config</h2>
         <div class="section-body">
           <p class="hint"><code>--host</code> and <code>--port</code> are synchronized with vLLM deploy config to avoid runtime mismatches.</p>
           <div class="kv-list" id="bench-kv"></div>
           <button class="small add-row" type="button" data-add-kv="bench-kv"><span class="button-icon" aria-hidden="true">＋</span>Add Argument</button>
         </div>
-      </section>
+        </section>
+      </div>
+
+      <div class="workspace-view" id="agent-workspace" role="tabpanel" aria-labelledby="tab-agent" hidden>
+        <section class="agent-panel">
+          <div class="agent-head">
+            <div>
+              <h2>Agent Chat</h2>
+              <p class="hint" style="margin:4px 0 0">Ask the VAP agent about configs, logs, profiling, and next steps.</p>
+            </div>
+            <div class="agent-head-actions">
+              <button class="small" id="agent-clear" type="button"><span class="button-icon" aria-hidden="true">×</span>Clear Chat</button>
+              <span class="agent-status" id="agent-status">Checking</span>
+            </div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-unlock" id="agent-unlock">
+              <div class="agent-unlock-card">
+                <h3>Unlock Agent</h3>
+                <p class="hint">No server-side subscription key is configured. Enter your AMD LLM subscription key to validate it and unlock Agent for this server session.</p>
+                <label>Subscription Key<input id="agent-key" type="password" placeholder="Ocp-Apim-Subscription-Key" autocomplete="off" /></label>
+                <button class="primary" id="agent-unlock-button" type="button"><span class="button-icon" aria-hidden="true">✓</span>Validate & Unlock</button>
+              </div>
+            </div>
+            <div class="agent-chat" id="agent-chat">
+              <div class="agent-templates" aria-label="Profiling templates">
+                <button class="agent-template" type="button" data-agent-template="new-profile">New profiling run</button>
+                <button class="agent-template" type="button" data-agent-template="refine-config">Refine current config</button>
+                <button class="agent-template" type="button" data-agent-template="analyze-logs">Analyze latest logs</button>
+                <button class="agent-template" type="button" data-agent-template="analyze-trace">Analyze latest trace</button>
+                <button class="agent-template" type="button" data-agent-template="validate-run">Validate and run</button>
+              </div>
+              <div class="agent-messages-wrap">
+                <div class="agent-messages" id="agent-messages"></div>
+                <button class="agent-scroll-bottom" id="agent-scroll-bottom" type="button" aria-label="Scroll to latest message"><span class="button-icon" aria-hidden="true">↓</span></button>
+              </div>
+              <div class="agent-compose">
+                <textarea class="agent-input" id="agent-input" placeholder="Ask the VAP agent..." rows="3"></textarea>
+                <button class="primary" id="agent-send" type="button"><span class="button-icon" aria-hidden="true">▶</span>Send</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
 
     <div class="splitter" id="layout-splitter" role="separator" aria-label="Resize config and log panels" aria-orientation="vertical" tabindex="0"></div>
@@ -1348,10 +1996,32 @@
     const btnStop = document.getElementById("btn-stop");
     const mainLayout = document.querySelector("main");
     const layoutSplitter = document.getElementById("layout-splitter");
+    const configWorkspace = document.getElementById("config-workspace");
+    const agentStatus = document.getElementById("agent-status");
+    const agentUnlockPanel = document.getElementById("agent-unlock");
+    const agentChatPanel = document.getElementById("agent-chat");
+    const agentKeyInput = document.getElementById("agent-key");
+    const agentUnlockButton = document.getElementById("agent-unlock-button");
+    const agentMessagesEl = document.getElementById("agent-messages");
+    const agentScrollBottomButton = document.getElementById("agent-scroll-bottom");
+    const agentInput = document.getElementById("agent-input");
+    const agentSendButton = document.getElementById("agent-send");
     const THEME_KEY = "vap-theme";
     const LAYOUT_RATIO_KEY = "vap-layout-config-ratio";
     const LAYOUT_RATIO_VERSION_KEY = "vap-layout-config-ratio-version";
     const CONFIG_DRAFT_KEY = "vap-config-draft";
+    const AGENT_MESSAGES_KEY = "vap-agent-messages";
+    const AGENT_PENDING_APPROVAL_KEY = "vap-agent-pending-approval";
+    const AGENT_PENDING_REQUEST_KEY = "vap-agent-pending-request";
+    const AGENT_SERVER_SESSION_KEY = "vap-agent-server-session";
+    const WORKSPACE_TAB_KEY = "vap-workspace-tab";
+    const AGENT_TEMPLATE_PROMPTS = {
+      "new-profile": "I want to start a new vLLM profiling run. Please guide me step by step. First, ask me what model I want to profile.",
+      "refine-config": "Please inspect the current VAP config and guide me through refining it for vLLM profiling.",
+      "analyze-logs": "Please inspect the latest VAP run status and logs, then explain what happened and what to do next.",
+      "analyze-trace": "Use the TorchProfilerTraceSkill workflow to analyze the latest vLLM trace. Call run_torchprofiler_skill with workflow=full_report and preferred_name=merged_trace. Produce a concise report with evidence, bottleneck hypotheses, Perfetto/TensorBoard inspection steps, and optimization suggestions. Do not request raw trace content.",
+      "validate-run": "Please validate the current config, check ports and resources, summarize the final profiling plan, and ask for approval before running.",
+    };
     const LAYOUT_RATIO_VERSION = "2";
     const DEFAULT_CONFIG_RATIO = 2 / 3;
     const CONFIG_MIN_WIDTH = 420;
@@ -1362,6 +2032,14 @@
     let currentConfig = DEFAULT_CONFIG;
     let currentRunDir = null;
     let draftSaveTimer = null;
+    let agentMessages = [];
+    let agentUnlocked = false;
+    let pendingAgentApproval = null;
+    let pageIsUnloading = false;
+    let currentServerSessionId = null;
+    let streamingRenderTimer = null;
+    let streamingRenderQueue = "";
+    let streamingRenderedContent = "";
 
     function getCurrentTheme() {
       return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
@@ -1484,6 +2162,741 @@
       }
     }
 
+    function switchWorkspace(tabName) {
+      const normalizedTabName = tabName === "agent" ? "agent" : "config";
+      document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+        const isActive = button.dataset.workspaceTab === normalizedTabName;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-selected", String(isActive));
+      });
+      document.querySelectorAll(".workspace-view").forEach((view) => {
+        const isActive = view.id === `${normalizedTabName}-workspace`;
+        view.classList.toggle("active", isActive);
+        view.hidden = !isActive;
+      });
+      localStorage.setItem(WORKSPACE_TAB_KEY, normalizedTabName);
+    }
+
+    function restoreWorkspaceTab() {
+      switchWorkspace(localStorage.getItem(WORKSPACE_TAB_KEY) || "config");
+    }
+
+    function setAgentUnlocked(isUnlocked, statusText = "") {
+      agentUnlocked = isUnlocked;
+      agentStatus.textContent = statusText || (isUnlocked ? "Unlocked" : "Locked");
+      agentStatus.classList.toggle("unlocked", isUnlocked);
+      agentUnlockPanel.classList.toggle("active", !isUnlocked);
+      agentChatPanel.classList.toggle("active", isUnlocked);
+    }
+
+    async function loadAgentStatus() {
+      const response = await fetch("/api/agent/status");
+      const data = await readJsonResponse(response, "Failed to read agent status");
+      if (!response.ok) throw new Error(data.message || "Failed to read agent status");
+      syncAgentServerSession(data.server_session_id);
+      const sourceLabel = data.key_source === "env" ? "Unlocked via env" : data.key_source === "memory" ? "Unlocked" : "Locked";
+      setAgentUnlocked(Boolean(data.unlocked), sourceLabel);
+      if (data.unlocked && agentMessages.length === 0) {
+        addAgentMessage(
+          "assistant",
+          `Agent is ready for vLLM profiling. What model do you want to profile first? Model: ${data.model || "configured model"}`,
+          { local: true },
+        );
+      }
+    }
+
+    async function unlockAgent() {
+      const subscriptionKey = agentKeyInput.value.trim();
+      if (!subscriptionKey) {
+        showToast("Enter a subscription key first", "error");
+        return;
+      }
+      agentUnlockButton.disabled = true;
+      agentUnlockButton.innerHTML = '<span class="button-icon" aria-hidden="true">…</span>Validating';
+      try {
+        const response = await fetch("/api/agent/unlock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subscription_key: subscriptionKey }),
+        });
+        const data = await readJsonResponse(response, "Failed to unlock agent");
+        if (!response.ok) throw new Error(data.message || "Failed to unlock agent");
+        syncAgentServerSession(data.server_session_id);
+        agentKeyInput.value = "";
+        setAgentUnlocked(true, "Unlocked");
+        addAgentMessage(
+          "assistant",
+          `Agent unlocked. What model do you want to profile first? Model: ${data.model || "configured model"}`,
+          { local: true },
+        );
+        showToast("Agent unlocked");
+      } finally {
+        agentUnlockButton.disabled = false;
+        agentUnlockButton.innerHTML = '<span class="button-icon" aria-hidden="true">✓</span>Validate & Unlock';
+      }
+    }
+
+    function addAgentMessage(role, content, options = {}) {
+      const shouldFollow = isAgentNearBottom();
+      const message = {
+        role,
+        content,
+        local: Boolean(options.local),
+        approval: options.approval || null,
+        artifact: options.artifact || null,
+      };
+      agentMessages.push(message);
+      renderAgentMessages();
+      if (shouldFollow) requestAnimationFrame(scrollAgentToBottom);
+      saveAgentSession();
+    }
+
+    function saveAgentSession() {
+      try {
+        localStorage.setItem(AGENT_MESSAGES_KEY, JSON.stringify(agentMessages.slice(-80)));
+        if (pendingAgentApproval) {
+          localStorage.setItem(AGENT_PENDING_APPROVAL_KEY, JSON.stringify(pendingAgentApproval));
+        } else {
+          localStorage.removeItem(AGENT_PENDING_APPROVAL_KEY);
+        }
+      } catch (error) {
+        console.warn("Failed to save agent session", error);
+      }
+    }
+
+    function loadAgentSession() {
+      try {
+        const rawMessages = localStorage.getItem(AGENT_MESSAGES_KEY);
+        if (rawMessages) {
+          const parsedMessages = JSON.parse(rawMessages);
+          if (Array.isArray(parsedMessages)) {
+            agentMessages = parsedMessages.filter((message) => (
+              message
+              && ["user", "assistant", "tool", "approval", "download"].includes(message.role)
+              && typeof message.content === "string"
+            ));
+            renderAgentMessages();
+          }
+        }
+        const rawApproval = localStorage.getItem(AGENT_PENDING_APPROVAL_KEY);
+        if (rawApproval) {
+          const approval = JSON.parse(rawApproval);
+          if (approval?.approval_id && approval?.tool_name) {
+            setAgentPendingApproval(approval);
+          }
+        }
+      } catch (error) {
+        localStorage.removeItem(AGENT_MESSAGES_KEY);
+        localStorage.removeItem(AGENT_PENDING_APPROVAL_KEY);
+        console.warn("Discarded invalid agent session", error);
+      }
+    }
+
+    function saveAgentPendingRequest(content) {
+      try {
+        localStorage.setItem(AGENT_PENDING_REQUEST_KEY, JSON.stringify({
+          content,
+          started_at: new Date().toISOString(),
+        }));
+      } catch (error) {
+        console.warn("Failed to save pending agent request", error);
+      }
+    }
+
+    function clearAgentPendingRequest() {
+      localStorage.removeItem(AGENT_PENDING_REQUEST_KEY);
+    }
+
+    function clearAgentStoredSession() {
+      agentMessages = [];
+      pendingAgentApproval = null;
+      localStorage.removeItem(AGENT_MESSAGES_KEY);
+      localStorage.removeItem(AGENT_PENDING_APPROVAL_KEY);
+      localStorage.removeItem(AGENT_PENDING_REQUEST_KEY);
+      renderAgentMessages();
+      setAgentPendingApproval(null);
+    }
+
+    function syncAgentServerSession(serverSessionId) {
+      if (!serverSessionId) return;
+      currentServerSessionId = serverSessionId;
+      const previousSessionId = localStorage.getItem(AGENT_SERVER_SESSION_KEY);
+      if (previousSessionId && previousSessionId !== serverSessionId) {
+        clearAgentStoredSession();
+        showToast("Server restarted. Agent chat was cleared.");
+      }
+      localStorage.setItem(AGENT_SERVER_SESSION_KEY, serverSessionId);
+    }
+
+    function restoreAgentPendingRequest() {
+      const rawPending = localStorage.getItem(AGENT_PENDING_REQUEST_KEY);
+      if (!rawPending) return;
+      try {
+        const pending = JSON.parse(rawPending);
+        const prompt = typeof pending.content === "string" ? pending.content : "";
+        addAgentMessage(
+          "assistant",
+          [
+            "Previous Agent request was interrupted by a page refresh or navigation.",
+            prompt ? `You can resend it if needed:\n\n> ${prompt}` : "You can send the request again if needed.",
+          ].join("\n\n"),
+          { local: true },
+        );
+      } catch (error) {
+        console.warn("Discarded invalid pending agent request", error);
+      } finally {
+        clearAgentPendingRequest();
+        agentSendButton.disabled = Boolean(pendingAgentApproval);
+        agentInput.disabled = Boolean(pendingAgentApproval);
+        agentSendButton.innerHTML = '<span class="button-icon" aria-hidden="true">▶</span>Send';
+      }
+    }
+
+    function isFetchInterrupted(error) {
+      return error?.name === "AbortError" || String(error?.message || error).includes("Failed to fetch");
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function renderInlineMarkdown(value) {
+      return escapeHtml(value)
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    }
+
+    function splitMarkdownTableRow(line) {
+      const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+      return trimmed.split("|").map((cell) => cell.trim());
+    }
+
+    function isMarkdownTable(lines) {
+      if (lines.length < 2) return false;
+      const separator = lines[1].trim();
+      return lines[0].includes("|") && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(separator);
+    }
+
+    function renderMarkdownTable(lines) {
+      const headers = splitMarkdownTableRow(lines[0]);
+      const rows = lines.slice(2).filter((line) => line.includes("|")).map(splitMarkdownTableRow);
+      return `
+        <table>
+          <thead><tr>${headers.map((header) => `<th>${renderInlineMarkdown(header)}</th>`).join("")}</tr></thead>
+          <tbody>${rows.map((row) => `<tr>${headers.map((_, index) => `<td>${renderInlineMarkdown(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table>`;
+    }
+
+    function isMarkdownHeading(line) {
+      return /^#{1,4}\s+/.test(line.trim());
+    }
+
+    function renderMarkdownHeading(line) {
+      const match = line.trim().match(/^(#{1,4})\s+(.+)$/);
+      const level = match[1].length;
+      return `<h${level}>${renderInlineMarkdown(match[2])}</h${level}>`;
+    }
+
+    function isMarkdownHr(line) {
+      return /^([-*_])(?:\s*\1){2,}\s*$/.test(line.trim());
+    }
+
+    function isUnorderedListLine(line) {
+      return /^[-*]\s+/.test(line.trim());
+    }
+
+    function isOrderedListLine(line) {
+      return /^\d+\.\s+/.test(line.trim());
+    }
+
+    function renderMarkdownLines(lines) {
+      const rendered = [];
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        if (isMarkdownHr(line)) {
+          rendered.push("<hr>");
+          continue;
+        }
+        if (isMarkdownHeading(line)) {
+          rendered.push(renderMarkdownHeading(line));
+          continue;
+        }
+        if (isUnorderedListLine(line)) {
+          const items = [];
+          while (index < lines.length && isUnorderedListLine(lines[index])) {
+            items.push(lines[index].trim().replace(/^[-*]\s+/, ""));
+            index += 1;
+          }
+          index -= 1;
+          rendered.push(`<ul>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+          continue;
+        }
+        if (isOrderedListLine(line)) {
+          const items = [];
+          while (index < lines.length && isOrderedListLine(lines[index])) {
+            items.push(lines[index].trim().replace(/^\d+\.\s+/, ""));
+            index += 1;
+          }
+          index -= 1;
+          rendered.push(`<ol>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+          continue;
+        }
+
+        const paragraphLines = [];
+        while (
+          index < lines.length
+          && !isMarkdownHr(lines[index])
+          && !isMarkdownHeading(lines[index])
+          && !isUnorderedListLine(lines[index])
+          && !isOrderedListLine(lines[index])
+        ) {
+          paragraphLines.push(lines[index]);
+          index += 1;
+        }
+        index -= 1;
+        if (paragraphLines.some((paragraphLine) => paragraphLine.trim())) {
+          rendered.push(`<p>${paragraphLines.map((paragraphLine) => renderInlineMarkdown(paragraphLine)).join("<br>")}</p>`);
+        }
+      }
+      return rendered.join("");
+    }
+
+    function renderMarkdown(content) {
+      const normalizedContent = content.replace(/<br\s*\/?>/gi, "\n").replace(/&lt;br\s*\/?&gt;/gi, "\n");
+      const blocks = [];
+      const fencePattern = /```[^\n]*\n?([\s\S]*?)```/g;
+      let cursor = 0;
+      let match;
+      while ((match = fencePattern.exec(normalizedContent)) !== null) {
+        if (match.index > cursor) {
+          blocks.push({ type: "text", value: normalizedContent.slice(cursor, match.index) });
+        }
+        blocks.push({ type: "code", value: match[1].replace(/\n$/, "") });
+        cursor = fencePattern.lastIndex;
+      }
+      if (cursor < normalizedContent.length) blocks.push({ type: "text", value: normalizedContent.slice(cursor) });
+
+      return blocks.map((block) => {
+        if (block.type === "code") {
+          return `<pre><code>${escapeHtml(block.value)}</code></pre>`;
+        }
+        return block.value
+          .split(/\n{2,}/)
+          .map((paragraph) => paragraph.trim())
+          .filter(Boolean)
+          .map((paragraph) => {
+            const lines = paragraph.split("\n");
+            if (isMarkdownTable(lines)) {
+              return renderMarkdownTable(lines);
+            }
+            return renderMarkdownLines(lines);
+          })
+          .join("");
+      }).join("");
+    }
+
+    function renderAgentMessages() {
+      agentMessagesEl.innerHTML = "";
+      for (let index = 0; index < agentMessages.length; index += 1) {
+        const message = agentMessages[index];
+        if (message.role === "tool") {
+          const toolMessages = [];
+          while (agentMessages[index]?.role === "tool") {
+            toolMessages.push(agentMessages[index]);
+            index += 1;
+          }
+          index -= 1;
+          const group = document.createElement("details");
+          group.className = "agent-tool-group";
+          const summary = document.createElement("summary");
+          summary.textContent = `Tools · ${toolMessages.length} step${toolMessages.length > 1 ? "s" : ""}`;
+          const body = document.createElement("div");
+          body.className = "agent-tool-group-body";
+          toolMessages.forEach((toolMessage) => {
+            const line = document.createElement("div");
+            line.className = "agent-tool-group-line";
+            line.textContent = toolMessage.content;
+            body.appendChild(line);
+          });
+          group.appendChild(summary);
+          group.appendChild(body);
+          agentMessagesEl.appendChild(group);
+          continue;
+        }
+        if (message.role === "download") {
+          addAgentDownloadCard(message.artifact);
+          continue;
+        }
+        const item = document.createElement("div");
+        item.className = `agent-message ${message.role}`;
+        const role = document.createElement("span");
+        role.className = "agent-role";
+        role.textContent = message.role;
+        const content = document.createElement("span");
+        content.className = "agent-markdown";
+        if (message.role === "tool") {
+          content.textContent = message.content;
+        } else {
+          content.innerHTML = renderMarkdown(message.content);
+        }
+        item.appendChild(role);
+        item.appendChild(content);
+        if (message.approval) {
+          const actions = document.createElement("div");
+          actions.className = "agent-approval-actions";
+          const approveButton = document.createElement("button");
+          approveButton.className = "primary small";
+          approveButton.type = "button";
+          approveButton.textContent = "Approve";
+          approveButton.addEventListener("click", () => {
+            approveAgentAction(message.approval.approval_id).catch((error) => showToast(error.message, "error"));
+          });
+          const cancelButton = document.createElement("button");
+          cancelButton.className = "small danger";
+          cancelButton.type = "button";
+          cancelButton.textContent = "Cancel";
+          cancelButton.addEventListener("click", () => {
+            cancelAgentAction(message.approval.approval_id).catch((error) => showToast(error.message, "error"));
+          });
+          actions.appendChild(approveButton);
+          actions.appendChild(cancelButton);
+          item.appendChild(actions);
+        }
+        agentMessagesEl.appendChild(item);
+      }
+      requestAnimationFrame(() => {
+        updateAgentScrollButton();
+      });
+    }
+
+    function isAgentNearBottom() {
+      return agentMessagesEl.scrollHeight - agentMessagesEl.scrollTop - agentMessagesEl.clientHeight < 48;
+    }
+
+    function scrollAgentToBottom() {
+      agentMessagesEl.scrollTop = agentMessagesEl.scrollHeight;
+      updateAgentScrollButton();
+    }
+
+    function updateAgentScrollButton() {
+      agentScrollBottomButton.classList.toggle("show", !isAgentNearBottom());
+    }
+
+    function addAgentDownloadCard(artifact) {
+      if (!artifact?.download_url) return;
+      const card = document.createElement("div");
+      card.className = "agent-download-card";
+      const label = document.createElement("span");
+      label.textContent = artifact.label || artifact.artifact || "Artifact";
+      const button = document.createElement("button");
+      button.className = "primary small";
+      button.type = "button";
+      button.innerHTML = '<span class="button-icon" aria-hidden="true">⇩</span>Download';
+      button.addEventListener("click", () => {
+        window.open(artifact.download_url, "_blank", "noopener,noreferrer");
+      });
+      card.appendChild(label);
+      card.appendChild(button);
+      agentMessagesEl.appendChild(card);
+    }
+
+    function setAgentPendingApproval(approval) {
+      pendingAgentApproval = approval || null;
+      agentSendButton.disabled = Boolean(pendingAgentApproval);
+      agentInput.disabled = Boolean(pendingAgentApproval);
+      agentSendButton.title = pendingAgentApproval ? "Resolve the pending approval first" : "";
+      saveAgentSession();
+    }
+
+    function addAgentToolEvents(toolEvents = []) {
+      toolEvents.forEach((event) => {
+        const artifact = event.result?.data;
+        if (event.tool_name === "prepare_download_artifact" && artifact?.download_url) {
+          addAgentMessage("download", artifact.label || "Artifact ready", { local: true, artifact });
+        }
+        const result = event.result?.ok === false
+          ? `failed: ${event.result.message || "unknown error"}`
+          : "completed";
+        addAgentMessage("tool", `${event.tool_name} ${result}`, { local: true });
+      });
+    }
+
+    function summarizeApproval(approval) {
+      const config = approval.arguments?.config || {};
+      if (approval.tool_name === "start_run" && config.model_cfg) {
+        const deploy = config.vllm_deploy_cfg || {};
+        const bench = config.vllm_bench_cfg || {};
+        const profiler = config.profiler_cfg || {};
+        const devices = config.container_cfg?.devices || [];
+        return [
+          `Approval required for **start_run**`,
+          ``,
+          `| Item | Value |`,
+          `|---|---|`,
+          `| Model | \`${config.model_cfg.model_name || "-"}\` |`,
+          `| Model root | \`${config.model_cfg.model_path || "-"}\` |`,
+          `| vLLM port | \`${deploy["--port"] ?? "-"}\` |`,
+          `| Tensor parallel | \`${deploy["-tp"] ?? "-"}\` |`,
+          `| GPU devices | \`${devices.length || "all/default"}\` |`,
+          `| Benchmark | input \`${bench["--random-input-len"] ?? "-"}\`, output \`${bench["--random-output-len"] ?? "-"}\`, concurrency \`${bench["--max-concurrency"] ?? "-"}\`, prompts \`${bench["--num-prompts"] ?? "-"}\` |`,
+          `| Profiler | \`${profiler.profiler || "-"}\`, iterations \`${profiler.max_iterations ?? "-"}\`, TensorBoard \`${profiler.tensorboard_port ?? "-"}\` |`,
+          ``,
+          `Approve only if this profiling plan looks correct.`,
+        ].join("\n");
+      }
+      return `Approval required for **${approval.tool_name}**`;
+    }
+
+    function addAgentApproval(approval) {
+      addAgentMessage(
+        "approval",
+        summarizeApproval(approval),
+        { local: true, approval },
+      );
+      setAgentPendingApproval(approval);
+    }
+
+    function clearAgentApprovalMessage(approvalId) {
+      agentMessages = agentMessages.map((message) => (
+        message.approval?.approval_id === approvalId
+          ? { ...message, approval: null, content: `${message.content.split("\n")[0]}\n\nResolved.` }
+          : message
+      ));
+      renderAgentMessages();
+      saveAgentSession();
+    }
+
+    function clearAgentChat() {
+      agentMessages = [];
+      setAgentPendingApproval(null);
+      localStorage.removeItem(AGENT_MESSAGES_KEY);
+      localStorage.removeItem(AGENT_PENDING_APPROVAL_KEY);
+      clearAgentPendingRequest();
+      renderAgentMessages();
+      if (agentUnlocked) {
+        addAgentMessage("assistant", "Agent chat cleared. What model do you want to profile next?", { local: true });
+      }
+      showToast("Agent chat cleared");
+    }
+
+    function updateStreamingAssistantMessage(content) {
+      const shouldFollow = isAgentNearBottom();
+      const lastMessage = agentMessages[agentMessages.length - 1];
+      if (lastMessage?.role === "assistant" && lastMessage.streaming) {
+        lastMessage.content = content;
+      } else {
+        agentMessages.push({
+          role: "assistant",
+          content,
+          local: false,
+          approval: null,
+          artifact: null,
+          streaming: true,
+        });
+      }
+      renderAgentMessages();
+      if (shouldFollow) requestAnimationFrame(scrollAgentToBottom);
+    }
+
+    function finishStreamingAssistantMessage() {
+      flushStreamingRenderQueue();
+      const lastMessage = agentMessages[agentMessages.length - 1];
+      if (lastMessage?.streaming) {
+        lastMessage.streaming = false;
+        saveAgentSession();
+      }
+    }
+
+    function resetStreamingRenderer() {
+      if (streamingRenderTimer) clearInterval(streamingRenderTimer);
+      streamingRenderTimer = null;
+      streamingRenderQueue = "";
+      streamingRenderedContent = "";
+    }
+
+    function queueStreamingDelta(delta) {
+      if (!delta) return;
+      streamingRenderQueue += delta;
+      if (streamingRenderTimer) return;
+      streamingRenderTimer = setInterval(() => {
+        if (!streamingRenderQueue) {
+          clearInterval(streamingRenderTimer);
+          streamingRenderTimer = null;
+          return;
+        }
+        const chunkSize = streamingRenderQueue.length > 80 ? 4 : 2;
+        const nextChunk = streamingRenderQueue.slice(0, chunkSize);
+        streamingRenderQueue = streamingRenderQueue.slice(chunkSize);
+        streamingRenderedContent += nextChunk;
+        updateStreamingAssistantMessage(streamingRenderedContent);
+      }, 20);
+    }
+
+    function flushStreamingRenderQueue() {
+      if (streamingRenderTimer) {
+        clearInterval(streamingRenderTimer);
+        streamingRenderTimer = null;
+      }
+      if (streamingRenderQueue) {
+        streamingRenderedContent += streamingRenderQueue;
+        streamingRenderQueue = "";
+        updateStreamingAssistantMessage(streamingRenderedContent);
+      }
+    }
+
+    async function handleAgentStream(response) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      resetStreamingRenderer();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+        for (const rawEvent of events) {
+          const dataLine = rawEvent.split("\n").find((line) => line.startsWith("data: "));
+          if (!dataLine) continue;
+          const event = JSON.parse(dataLine.slice(6));
+          if (event.type === "delta") {
+            queueStreamingDelta(event.content || "");
+          } else if (event.type === "tool_event") {
+            flushStreamingRenderQueue();
+            addAgentToolEvents(event.tool_event ? [event.tool_event] : []);
+          } else if (event.type === "approval_required" && event.approval) {
+            finishStreamingAssistantMessage();
+            addAgentMessage(event.message?.role || "assistant", event.message?.content || "", { local: true });
+            addAgentApproval(event.approval);
+          } else if (event.type === "done") {
+            if (!streamingRenderedContent && !streamingRenderQueue && event.message?.content) {
+              queueStreamingDelta(event.message.content);
+            }
+            finishStreamingAssistantMessage();
+          } else if (event.type === "error") {
+            throw new Error(event.message || "Agent stream failed");
+          }
+        }
+      }
+      finishStreamingAssistantMessage();
+    }
+
+    async function sendAgentMessage() {
+      if (!agentUnlocked) {
+        showToast("Unlock Agent first", "error");
+        return;
+      }
+      const content = agentInput.value.trim();
+      if (!content) return;
+      agentInput.value = "";
+      addAgentMessage("user", content);
+      saveAgentPendingRequest(content);
+      agentSendButton.disabled = true;
+      agentSendButton.innerHTML = '<span class="button-icon" aria-hidden="true">…</span>Sending';
+      try {
+        const response = await fetch("/api/agent/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: agentMessages.filter((message) => !message.local) }),
+        });
+        if (!response.ok) {
+          const data = await readJsonResponse(response, "Agent chat failed");
+          throw new Error(data.message || "Agent chat failed");
+        }
+        await handleAgentStream(response);
+        clearAgentPendingRequest();
+      } catch (error) {
+        if (isFetchInterrupted(error)) {
+          if (!pageIsUnloading) {
+            addAgentMessage("assistant", "Agent request was interrupted. Please retry when the server is reachable.", { local: true });
+            showToast("Agent request interrupted", "error");
+            clearAgentPendingRequest();
+          }
+        } else {
+          clearAgentPendingRequest();
+          addAgentMessage("assistant", `Error: ${error.message}`);
+          showToast(error.message, "error");
+        }
+      } finally {
+        resetStreamingRenderer();
+        agentSendButton.disabled = Boolean(pendingAgentApproval);
+        agentSendButton.innerHTML = '<span class="button-icon" aria-hidden="true">▶</span>Send';
+      }
+    }
+
+    function useAgentTemplate(templateId) {
+      const prompt = AGENT_TEMPLATE_PROMPTS[templateId];
+      if (!prompt) return;
+      agentInput.value = prompt;
+      sendAgentMessage();
+    }
+
+    async function approveAgentAction(approvalId) {
+      agentSendButton.disabled = true;
+      agentInput.disabled = true;
+      try {
+        const response = await fetch("/api/agent/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approval_id: approvalId }),
+        });
+        const data = await readJsonResponse(response, "Agent approval failed");
+        if (!response.ok) throw new Error(data.message || "Agent approval failed");
+        setAgentPendingApproval(null);
+        clearAgentApprovalMessage(approvalId);
+        addAgentToolEvents(data.tool_event ? [data.tool_event] : []);
+        addAgentMessage(data.message?.role || "assistant", data.message?.content || "", { local: true });
+        await syncAfterAgentAction(data.tool_event);
+        showToast("Agent action approved");
+      } finally {
+        agentSendButton.disabled = Boolean(pendingAgentApproval);
+        agentInput.disabled = Boolean(pendingAgentApproval);
+      }
+    }
+
+    async function cancelAgentAction(approvalId) {
+      agentSendButton.disabled = true;
+      agentInput.disabled = true;
+      try {
+        const response = await fetch("/api/agent/cancel-action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approval_id: approvalId }),
+        });
+        const data = await readJsonResponse(response, "Agent action cancel failed");
+        if (!response.ok) throw new Error(data.message || "Agent action cancel failed");
+        setAgentPendingApproval(null);
+        clearAgentApprovalMessage(approvalId);
+        addAgentMessage(data.message?.role || "assistant", data.message?.content || "", { local: true });
+        showToast("Agent action cancelled");
+      } finally {
+        agentSendButton.disabled = Boolean(pendingAgentApproval);
+        agentInput.disabled = Boolean(pendingAgentApproval);
+      }
+    }
+
+    async function syncAfterAgentAction(toolEvent) {
+      if (!toolEvent || !["start_run", "stop_run"].includes(toolEvent.tool_name)) return;
+      openLogPanel("run");
+      if (toolEvent.tool_name === "start_run") {
+        updateLogContent(logOutput, "", { forceScroll: true });
+        setRunState("running", "Running");
+        setTensorBoardReady(false);
+        setProfileActionsReady(false);
+      } else if (toolEvent.tool_name === "stop_run") {
+        setRunState("running", "Stopping");
+      }
+      await pollStatus();
+      if (toolEvent.tool_name === "start_run") startStatusPolling();
+    }
+
     function saveConfigDraft() {
       try {
         localStorage.setItem(CONFIG_DRAFT_KEY, JSON.stringify(buildConfig()));
@@ -1518,8 +2931,12 @@
     function setRunState(state, label) {
       runStatus.textContent = label;
       runStatus.className = "status" + (state ? " " + state : "");
-      btnRun.disabled = state === "running";
-      btnStop.disabled = state !== "running";
+      const isRunning = state === "running";
+      btnRun.disabled = isRunning;
+      btnStop.disabled = !isRunning;
+      document.getElementById("btn-validate").disabled = isRunning;
+      document.getElementById("btn-reload").disabled = isRunning;
+      document.getElementById("btn-save").disabled = isRunning;
     }
 
     function setTensorBoardReady(isReady) {
@@ -2454,8 +3871,8 @@
       addEnv();
       scheduleConfigDraftSave();
     });
-    document.querySelector(".form").addEventListener("input", scheduleConfigDraftSave);
-    document.querySelector(".form").addEventListener("change", scheduleConfigDraftSave);
+    configWorkspace.addEventListener("input", scheduleConfigDraftSave);
+    configWorkspace.addEventListener("change", scheduleConfigDraftSave);
     document.querySelectorAll(".kv-list, .list-editor").forEach((container) => {
       container.addEventListener("click", (event) => {
         if (event.target.closest("button")) {
@@ -2496,6 +3913,32 @@
     btnPerfetto.addEventListener("click", openPerfetto);
     btnProfileDownload.addEventListener("click", () => downloadProfileArchive().catch((error) => showToast(error.message, "error")));
     document.getElementById("btn-stop").addEventListener("click", () => stopVap().catch((error) => showToast(error.message, "error")));
+    document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+      button.addEventListener("click", () => switchWorkspace(button.dataset.workspaceTab));
+    });
+    agentUnlockButton.addEventListener("click", () => unlockAgent().catch((error) => showToast(error.message, "error")));
+    agentKeyInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        unlockAgent().catch((error) => showToast(error.message, "error"));
+      }
+    });
+    agentSendButton.addEventListener("click", () => sendAgentMessage());
+    agentInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendAgentMessage();
+      }
+    });
+    agentMessagesEl.addEventListener("scroll", updateAgentScrollButton);
+    agentScrollBottomButton.addEventListener("click", scrollAgentToBottom);
+    window.addEventListener("pagehide", () => {
+      pageIsUnloading = true;
+    });
+    document.querySelectorAll("[data-agent-template]").forEach((button) => {
+      button.addEventListener("click", () => useAgentTemplate(button.dataset.agentTemplate));
+    });
+    document.getElementById("agent-clear").addEventListener("click", clearAgentChat);
     document.getElementById("validation-close").addEventListener("click", () => validationModal.classList.remove("show"));
     document.getElementById("validation-ok").addEventListener("click", () => validationModal.classList.remove("show"));
     validationModal.addEventListener("click", (event) => {
@@ -2504,6 +3947,10 @@
 
     applyTheme(getCurrentTheme());
     initLayoutSplitter();
+    restoreWorkspaceTab();
+    loadAgentSession();
+    restoreAgentPendingRequest();
+    requestAnimationFrame(updateAgentScrollButton);
     if (!loadConfigDraft()) {
       loadConfig().catch((error) => {
         showToast("Failed to load config: " + error.message, "error");
@@ -2511,6 +3958,10 @@
       });
     }
     pollStatus().catch((error) => showToast(error.message, "error"));
+    loadAgentStatus().catch((error) => {
+      setAgentUnlocked(false, "Unavailable");
+      showToast(error.message, "error");
+    });
   </script>
 </body>
 </html>

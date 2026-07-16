@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import atexit
+from collections import Counter, defaultdict
+import gzip
 import io
 import json
 import os
@@ -20,19 +22,30 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from agent_runtime import AgentTool, VAPAgentRuntime
 from config import VAPConfig
+from runtime_paths import (
+    APP_DIR,
+    VAP_BIN_DIR,
+    VAP_CONFIG_PATH,
+    VAP_HOME,
+    VAP_LOGS_DIR,
+    VAP_PERFETTO_HOME,
+    VAP_TEMP_CONFIG_DIR,
+    ensure_vap_home,
+    resolve_under_vap_home,
+)
 
-APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "public"
 DEFAULT_CONFIG_PATH = APP_DIR / "example-config.json"
-WORK_DIR = Path.cwd().resolve()
-CONFIG_PATH = WORK_DIR / "config.json"
-LOGS_DIR = WORK_DIR / "logs"
-TEMP_CONFIG_DIR = WORK_DIR / "tmp" / "configs"
+CONFIG_PATH = VAP_CONFIG_PATH
+LOGS_DIR = VAP_LOGS_DIR
+TEMP_CONFIG_DIR = VAP_TEMP_CONFIG_DIR
 SHELL_UNSAFE_PATTERN = re.compile(r"[\n\r;&|`$<>]")
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_VISIBLE_DEVICE_COUNT = 8
 PERFETTO_PORT = 9001
+SERVER_SESSION_ID = uuid.uuid4().hex
 RUN_LOCK = threading.Lock()
 RUN_STATE: dict[str, Any] = {
     "process": None,
@@ -46,8 +59,12 @@ RUN_STATE: dict[str, Any] = {
     "output": "",
     "stop_requested": False,
 }
+AGENT_RUNTIME = VAPAgentRuntime()
+AGENT_TOOLS_REGISTERED = False
+AGENT_TOOLS_LOCK = threading.Lock()
 SHUTDOWN_CLEANUP_LOCK = threading.Lock()
 SHUTDOWN_CLEANUP_DONE = False
+TORCHPROFILER_SKILL_DIR = APP_DIR / "skills" / "TorchProfilerTraceSkill"
 
 
 def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -398,6 +415,7 @@ def build_config_summary(config: VAPConfig) -> dict[str, Any]:
 
 
 def save_temp_config(payload: dict[str, Any]) -> Path:
+    ensure_vap_home()
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     TEMP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     temp_path = TEMP_CONFIG_DIR / f"vap-config-{timestamp}-{uuid.uuid4().hex[:8]}.json"
@@ -725,11 +743,8 @@ def check_machine(node: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def resolve_config_path(raw_path: str | None) -> Path:
     if not raw_path:
-        return DEFAULT_CONFIG_PATH
-    candidate = (WORK_DIR / raw_path).resolve()
-    if not candidate.is_relative_to(WORK_DIR):
-        raise ValueError("Config path must be under the current working directory")
-    return candidate
+        return CONFIG_PATH if CONFIG_PATH.is_file() else DEFAULT_CONFIG_PATH
+    return resolve_under_vap_home(raw_path)
 
 
 def get_run_state_snapshot() -> dict[str, Any]:
@@ -787,6 +802,13 @@ def read_current_log_file(file_name: str) -> dict[str, Any]:
         "content": "",
         "message": f"This run has not generated {file_name} yet",
     }
+
+
+def build_log_download(file_name: str) -> tuple[str, bytes]:
+    log_info = read_current_log_file(file_name)
+    if not log_info.get("exists"):
+        raise ValueError(str(log_info.get("message") or f"{file_name} does not exist"))
+    return file_name, str(log_info["content"]).encode("utf-8")
 
 
 def resolve_profile_archive_run_dir(raw_run_dir: str | None = None) -> Path:
@@ -928,13 +950,13 @@ def start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
                 "The previous TensorBoard process did not stop in time. Try again later."
             )
 
-    run_config_path = (config_path or CONFIG_PATH).resolve()
+    run_config_path = (config_path or resolve_config_path(None)).resolve()
     LOGS_DIR.mkdir(exist_ok=True)
     existing_dirs = {path.name for path in LOGS_DIR.iterdir() if path.is_dir()}
     started_at = time.time()
     process = subprocess.Popen(
         [sys.executable, "main.py", "run", "--config", str(run_config_path)],
-        cwd=str(WORK_DIR),
+        cwd=str(APP_DIR),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -994,6 +1016,69 @@ def force_kill_process_group_later(
     threading.Thread(target=worker, daemon=True).start()
 
 
+def process_cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
+            errors="replace"
+        )
+    except OSError:
+        return ""
+
+
+def terminate_recorded_visualization_pids(run_dir: Path | None, timeout_sec: float = 3.0) -> None:
+    if run_dir is None:
+        return
+    pid_file = (run_dir / "visualization_pids.json").resolve()
+    if not pid_file.is_file() or not pid_file.is_relative_to(LOGS_DIR.resolve()):
+        return
+    try:
+        payload = json.loads(pid_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Failed to read visualization pid file {pid_file}: {exc}")
+        return
+    if not isinstance(payload, dict):
+        return
+
+    for name, raw_pid in payload.items():
+        try:
+            pid = int(raw_pid)
+        except (TypeError, ValueError):
+            continue
+        cmdline = process_cmdline(pid)
+        if not cmdline:
+            continue
+        if "tensorboard" not in cmdline and "trace_processor" not in cmdline:
+            print(f"Skip cleanup for pid {pid}; command is not a VAP visualization process")
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except OSError as exc:
+            print(f"Failed to terminate {name} pid {pid}: {exc}")
+            continue
+
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                print(f"Failed to force kill {name} pid {pid}: {exc}")
+
+    try:
+        pid_file.write_text("{}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
     global SHUTDOWN_CLEANUP_DONE
     with SHUTDOWN_CLEANUP_LOCK:
@@ -1003,6 +1088,7 @@ def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
 
     with RUN_LOCK:
         process = RUN_STATE["process"]
+        run_dir = Path(RUN_STATE["run_dir"]).resolve() if RUN_STATE["run_dir"] else None
         is_running = (
             RUN_STATE["running"] and process is not None and process.poll() is None
         )
@@ -1013,20 +1099,25 @@ def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
             ] += "\n--- Server is exiting; stopping active VAP run ---\n"
 
     if not is_running or process is None:
+        terminate_recorded_visualization_pids(run_dir)
         return
 
     print("Stopping active VAP run before server exits...")
     if not stop_process_group_sync(process, timeout_sec=timeout_sec):
         print("Active VAP run did not stop cleanly before server exit.")
+    terminate_recorded_visualization_pids(run_dir)
 
 
 def stop_vap_run() -> dict[str, Any]:
     with RUN_LOCK:
         process = RUN_STATE["process"]
+        run_dir = Path(RUN_STATE["run_dir"]).resolve() if RUN_STATE["run_dir"] else None
     if process is None or process.poll() is not None:
+        terminate_recorded_visualization_pids(run_dir)
         return {"message": "There is no active VAP run", **get_run_state_snapshot()}
     terminate_run_process(process)
     force_kill_process_group_later(process)
+    terminate_recorded_visualization_pids(run_dir)
     with RUN_LOCK:
         RUN_STATE["stop_requested"] = True
         RUN_STATE["output"] += "\n--- Stop requested from UI ---\n"
@@ -1034,6 +1125,681 @@ def stop_vap_run() -> dict[str, Any]:
         "message": "Stop signal sent. main.py and its child processes will be stopped.",
         **get_run_state_snapshot(),
     }
+
+
+def object_schema(properties: dict[str, Any] | None = None, required: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties or {},
+        "required": required or [],
+        "additionalProperties": False,
+    }
+
+
+def current_config_payload() -> dict[str, Any]:
+    config_path = resolve_config_path(None)
+    with config_path.open("r", encoding="utf-8") as config_file:
+        return json.load(config_file)
+
+
+def latest_log_run_dir() -> Path | None:
+    if not LOGS_DIR.is_dir():
+        return None
+    candidates = [path for path in LOGS_DIR.iterdir() if path.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+
+
+def inspect_latest_trace(args: dict[str, Any]) -> dict[str, Any]:
+    preferred_name = str(args.get("preferred_name") or "merged_trace")
+    raw_run_dir = args.get("run_dir")
+    if isinstance(raw_run_dir, str) and raw_run_dir.strip():
+        run_dir = resolve_profile_archive_run_dir(raw_run_dir)
+    else:
+        snapshot = get_run_state_snapshot()
+        run_dir = Path(snapshot["run_dir"]).resolve() if snapshot["run_dir"] else latest_log_run_dir()
+    if run_dir is None:
+        raise ValueError("No run directory is available yet")
+
+    profile_dir = (run_dir / "vllm-profile").resolve()
+    if not profile_dir.is_dir() or not profile_dir.is_relative_to(LOGS_DIR.resolve()):
+        raise ValueError("The latest run has not generated a vllm-profile directory yet")
+
+    files = sorted([path for path in profile_dir.rglob("*") if path.is_file()])
+    if not files:
+        raise ValueError("The vllm-profile directory is empty")
+
+    def score(path: Path) -> tuple[int, str]:
+        name = path.name.lower()
+        preferred = preferred_name.lower()
+        if name.startswith(preferred) or preferred in name:
+            return (0, name)
+        if "merged_trace" in name or "merge_trace" in name:
+            return (1, name)
+        if name.endswith(".trace.json.gz") or name.endswith(".pt.trace.json.gz"):
+            return (2, name)
+        if name.endswith(".trace.json") or name.endswith(".json"):
+            return (3, name)
+        return (4, name)
+
+    trace_path = sorted(files, key=score)[0]
+    stat = trace_path.stat()
+    summary = summarize_trace_file(trace_path)
+    return {
+        "run_dir": str(run_dir),
+        "profile_dir": str(profile_dir),
+        "trace_path": str(trace_path),
+        "trace_file": trace_path.name,
+        "size_bytes": stat.st_size,
+        "modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+        "candidate_count": len(files),
+        "candidates": [path.name for path in sorted(files, key=score)[:10]],
+        "looks_merged": trace_path.name.lower().startswith(("merged_trace", "merge_trace")),
+        "summary": summary,
+        "diagnosis": build_trace_diagnosis(summary),
+    }
+
+
+PERFETTO_SQL_QUERIES: dict[str, str] = {
+    "trace_overview": """
+SELECT
+  (SELECT COUNT(*) FROM slice) AS slice_count,
+  (SELECT COUNT(*) FROM thread_track) AS thread_track_count,
+  (SELECT COUNT(*) FROM process) AS process_count,
+  (SELECT COUNT(*) FROM sched) AS sched_count;
+""",
+    "top_slices": """
+SELECT
+  name,
+  dur / 1000000.0 AS dur_ms,
+  ts / 1000000.0 AS ts_ms
+FROM slice
+WHERE dur > 0
+ORDER BY dur DESC
+LIMIT {limit};
+""",
+    "category_duration": """
+SELECT
+  COALESCE(category, 'uncategorized') AS category,
+  COUNT(*) AS event_count,
+  SUM(dur) / 1000000.0 AS total_dur_ms,
+  AVG(dur) / 1000000.0 AS avg_dur_ms,
+  MAX(dur) / 1000000.0 AS max_dur_ms
+FROM slice
+WHERE dur > 0
+GROUP BY category
+ORDER BY total_dur_ms DESC
+LIMIT {limit};
+""",
+    "sync_events": """
+SELECT
+  name,
+  dur / 1000000.0 AS dur_ms,
+  ts / 1000000.0 AS ts_ms
+FROM slice
+WHERE dur > 0
+  AND (
+    name LIKE '%Synchronize%'
+    OR name LIKE '%sync%'
+    OR name LIKE '%Wait%'
+    OR name LIKE '%wait%'
+    OR name LIKE '%barrier%'
+  )
+ORDER BY dur DESC
+LIMIT {limit};
+""",
+    "gpu_kernels": """
+SELECT
+  name,
+  dur / 1000000.0 AS dur_ms,
+  ts / 1000000.0 AS ts_ms
+FROM slice
+WHERE dur > 0
+  AND (
+    category LIKE '%kernel%'
+    OR name LIKE '%Kernel%'
+    OR name LIKE '%hipLaunchKernel%'
+  )
+ORDER BY dur DESC
+LIMIT {limit};
+""",
+    "operator_hotspots": """
+SELECT
+  name,
+  COUNT(*) AS calls,
+  SUM(dur) / 1000000.0 AS total_dur_ms,
+  AVG(dur) / 1000000.0 AS avg_dur_ms,
+  MAX(dur) / 1000000.0 AS max_dur_ms
+FROM slice
+WHERE dur > 0
+  AND (
+    name LIKE 'aten::%'
+    OR name LIKE 'vllm%'
+    OR name LIKE '%attention%'
+    OR name LIKE '%Attention%'
+  )
+GROUP BY name
+ORDER BY total_dur_ms DESC
+LIMIT {limit};
+""",
+    "timeline_gaps": """
+SELECT
+  name,
+  dur / 1000000.0 AS dur_ms,
+  ts / 1000000.0 AS ts_ms
+FROM slice
+WHERE dur > 0
+  AND name LIKE '%idle%'
+ORDER BY dur DESC
+LIMIT {limit};
+""",
+}
+
+
+def load_skill_queries(skill_dir: Path = TORCHPROFILER_SKILL_DIR) -> dict[str, str]:
+    query_file = skill_dir / "queries.yaml"
+    if not query_file.is_file():
+        return PERFETTO_SQL_QUERIES
+    queries: dict[str, list[str]] = {}
+    current_name: str | None = None
+    current_lines: list[str] = []
+    for raw_line in query_file.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        if not raw_line.startswith(" ") and raw_line.endswith(": |"):
+            if current_name is not None:
+                queries[current_name] = current_lines
+            current_name = raw_line.split(":", 1)[0].strip()
+            current_lines = []
+            continue
+        if current_name is not None:
+            current_lines.append(raw_line[2:] if raw_line.startswith("  ") else raw_line)
+    if current_name is not None:
+        queries[current_name] = current_lines
+    parsed = {name: "\n".join(lines).strip() for name, lines in queries.items()}
+    return parsed or PERFETTO_SQL_QUERIES
+
+
+def torchprofiler_skill_workflows() -> dict[str, list[str]]:
+    return {
+        "overview": ["trace_overview", "category_duration", "rank_activity"],
+        "sync_waits": ["sync_waits", "top_slices"],
+        "operator_hotspots": ["operator_hotspots", "aten_hotspots"],
+        "gpu_kernels": ["gpu_kernels", "category_duration"],
+        "rank_imbalance": ["rank_activity", "rank_longest_slices"],
+        "memory_copy": ["memory_copies", "category_duration"],
+        "full_report": [
+            "trace_overview",
+            "category_duration",
+            "sync_waits",
+            "gpu_kernels",
+            "operator_hotspots",
+            "rank_activity",
+            "memory_copies",
+        ],
+    }
+
+
+def trace_processor_path() -> Path:
+    candidates = [VAP_BIN_DIR / "trace_processor", APP_DIR / "bin" / "trace_processor", APP_DIR / "trace_processor"]
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise ValueError("trace_processor is not installed. Run install.sh first.")
+
+
+def run_perfetto_sql(args: dict[str, Any]) -> dict[str, Any]:
+    queries = load_skill_queries()
+    query_name = str(args.get("query_name") or "top_slices")
+    if query_name not in queries:
+        raise ValueError(
+            "Unsupported query_name. Use one of: "
+            + ", ".join(sorted(queries))
+        )
+    limit = args.get("limit", 20)
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        raise ValueError("limit must be an integer from 1 to 100")
+
+    trace_info = inspect_latest_trace(
+        {
+            "preferred_name": args.get("preferred_name") or "merged_trace",
+            "run_dir": args.get("run_dir"),
+        }
+    )
+    trace_path = Path(trace_info["trace_path"])
+    sql = queries[query_name].format(limit=limit)
+    perfetto_home = VAP_PERFETTO_HOME
+    perfetto_home.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["HOME"] = str(perfetto_home)
+    command = [str(trace_processor_path()), "query", str(trace_path), sql]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(APP_DIR),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("Perfetto SQL query timed out after 120s") from exc
+    if completed.returncode != 0:
+        raise ValueError(
+            "Perfetto SQL query failed: "
+            + (completed.stderr.strip() or completed.stdout.strip() or f"exit {completed.returncode}")
+        )
+    return {
+        "query_name": query_name,
+        "sql": sql.strip(),
+        "trace_file": trace_info["trace_file"],
+        "trace_path": trace_info["trace_path"],
+        "looks_merged": trace_info.get("looks_merged"),
+        "stdout": completed.stdout.strip()[:12000],
+        "stderr": completed.stderr.strip()[:4000],
+    }
+
+
+def run_torchprofiler_skill(args: dict[str, Any]) -> dict[str, Any]:
+    workflow = str(args.get("workflow") or "full_report")
+    workflows = torchprofiler_skill_workflows()
+    if workflow not in workflows:
+        raise ValueError(
+            "Unsupported workflow. Use one of: " + ", ".join(sorted(workflows))
+        )
+    limit = args.get("limit", 20)
+    results = []
+    for query_name in workflows[workflow]:
+        try:
+            results.append(
+                {
+                    "query_name": query_name,
+                    "ok": True,
+                    "result": run_perfetto_sql(
+                        {
+                            "query_name": query_name,
+                            "preferred_name": args.get("preferred_name") or "merged_trace",
+                            "run_dir": args.get("run_dir"),
+                            "limit": limit,
+                        }
+                    ),
+                }
+            )
+        except Exception as exc:
+            results.append({"query_name": query_name, "ok": False, "message": str(exc)})
+    return {
+        "skill": "TorchProfilerTraceSkill",
+        "workflow": workflow,
+        "attribution": "Inspired by Gracker/Perfetto-Skills evidence-driven workflow design; original VAP SQL presets.",
+        "results": results,
+    }
+
+
+def build_trace_diagnosis(summary: dict[str, Any]) -> dict[str, Any]:
+    if not summary.get("available"):
+        return {"available": False, "findings": [summary.get("message", "Trace summary is unavailable")]}
+
+    findings: list[str] = []
+    next_steps: list[str] = []
+    hypotheses: list[str] = []
+    duration_categories = {
+        item["category"]: item["duration_us"]
+        for item in summary.get("top_categories_by_duration_us", [])
+        if isinstance(item, dict)
+    }
+    longest = summary.get("longest_events", [])
+    longest_names = [str(item.get("name", "")) for item in longest if isinstance(item, dict)]
+
+    if duration_categories.get("cuda_runtime", 0) > duration_categories.get("kernel", 0) * 10:
+        findings.append("cuda_runtime duration is much larger than kernel duration; synchronization or launch overhead may dominate the trace.")
+        hypotheses.append("Inspect hipEventSynchronize and hipLaunchKernel spans for blocking waits, serialized work, or host-side scheduling gaps.")
+    if any("hipEventSynchronize" in name for name in longest_names):
+        findings.append("The longest events include hipEventSynchronize, which often points to host waiting for GPU completion or synchronization barriers.")
+        next_steps.append("In Perfetto, focus on hipEventSynchronize regions and check what GPU work precedes each wait.")
+    if any("aten::sort" in name for name in longest_names):
+        findings.append("The longest CPU ops include aten::sort across ranks; sampling/top-k/sorting work may be a decode bottleneck.")
+        hypotheses.append("Review sampling settings and decode path; compare whether aten::sort aligns with token generation steps.")
+
+    ranks = [(rank, count) for rank, count in summary.get("events_by_rank", []) if rank != "unknown"]
+    if ranks:
+        counts = [count for _, count in ranks]
+        if max(counts) - min(counts) > max(counts) * 0.10:
+            findings.append("Event counts differ noticeably across ranks; possible rank imbalance.")
+        else:
+            findings.append("Rank event counts look roughly balanced.")
+        next_steps.append("In Perfetto, compare rank lanes for idle gaps, long waits, and whether decode steps align across ranks.")
+
+    next_steps.extend(
+        [
+            "Inspect user_annotation events to separate prefill/decode phases and request-level spans.",
+            "Use TensorBoard profiler views to cross-check operator time, kernel time, memory copies, and trace step boundaries.",
+            "Compare GPU kernel lanes with CPU op lanes to identify host gaps before GPU work launches.",
+        ]
+    )
+
+    return {
+        "available": True,
+        "findings": findings[:8],
+        "next_steps": next_steps[:8],
+        "optimization_hypotheses": hypotheses[:8],
+    }
+
+
+def summarize_trace_file(trace_path: Path) -> dict[str, Any]:
+    try:
+        if trace_path.suffix == ".gz":
+            with gzip.open(trace_path, "rt", encoding="utf-8", errors="replace") as trace_file:
+                payload = json.load(trace_file)
+        else:
+            payload = json.loads(trace_path.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:
+        return {"available": False, "message": f"Failed to parse trace JSON: {exc}"}
+
+    events = payload.get("traceEvents") if isinstance(payload, dict) else None
+    if not isinstance(events, list):
+        return {"available": False, "message": "Trace JSON does not contain traceEvents"}
+
+    category_counts: Counter[str] = Counter()
+    rank_counts: Counter[str] = Counter()
+    duration_by_category: defaultdict[str, float] = defaultdict(float)
+    longest_events: list[dict[str, Any]] = []
+    min_ts: float | None = None
+    max_ts: float | None = None
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        category = str(event.get("cat") or "uncategorized")
+        category_counts[category] += 1
+        args = event.get("args") if isinstance(event.get("args"), dict) else {}
+        rank = args.get("rank", "unknown")
+        rank_counts[str(rank)] += 1
+
+        ts = event.get("ts")
+        dur = event.get("dur")
+        if isinstance(ts, (int, float)):
+            min_ts = ts if min_ts is None else min(min_ts, ts)
+            if isinstance(dur, (int, float)):
+                max_ts = ts + dur if max_ts is None else max(max_ts, ts + dur)
+            else:
+                max_ts = ts if max_ts is None else max(max_ts, ts)
+        if isinstance(dur, (int, float)):
+            duration_by_category[category] += float(dur)
+            longest_events.append(
+                {
+                    "name": str(event.get("name") or ""),
+                    "category": category,
+                    "duration_us": round(float(dur), 3),
+                    "rank": str(rank),
+                    "pid": event.get("pid"),
+                    "tid": event.get("tid"),
+                }
+            )
+
+    longest_events = sorted(
+        longest_events,
+        key=lambda item: item["duration_us"],
+        reverse=True,
+    )[:20]
+
+    return {
+        "available": True,
+        "event_count": len(events),
+        "time_span_us": round(max_ts - min_ts, 3) if min_ts is not None and max_ts is not None else None,
+        "top_categories_by_count": category_counts.most_common(12),
+        "top_categories_by_duration_us": sorted(
+            (
+                {"category": category, "duration_us": round(duration, 3)}
+                for category, duration in duration_by_category.items()
+            ),
+            key=lambda item: item["duration_us"],
+            reverse=True,
+        )[:12],
+        "events_by_rank": rank_counts.most_common(),
+        "longest_events": longest_events,
+    }
+
+
+def prepare_download_artifact(args: dict[str, Any]) -> dict[str, Any]:
+    artifact = str(args.get("artifact") or "")
+    log_names = {
+        "vap_log": "vap_log.txt",
+        "vllm_deploy_log": "vllm_deploy.log",
+        "vllm_bench_log": "vllm_bench.log",
+    }
+    if artifact in log_names:
+        file_name = log_names[artifact]
+        log_info = read_current_log_file(file_name)
+        if not log_info.get("exists"):
+            raise ValueError(str(log_info.get("message") or f"{file_name} does not exist"))
+        return {
+            "artifact": artifact,
+            "label": file_name,
+            "download_url": f"/api/log-file/download?name={file_name}",
+            "content_type": "text/plain",
+        }
+    if artifact == "trace_archive":
+        run_dir = get_run_state_snapshot().get("run_dir")
+        # Validate availability now, but let the browser stream the real download.
+        file_name, _ = build_current_profile_archive(str(run_dir) if run_dir else None)
+        query = f"?run_dir={str(run_dir)}" if run_dir else ""
+        return {
+            "artifact": artifact,
+            "label": file_name,
+            "download_url": f"/api/profile/archive{query}",
+            "content_type": "application/zip",
+        }
+    raise ValueError("Unsupported artifact. Use vap_log, vllm_deploy_log, vllm_bench_log, or trace_archive.")
+
+
+def get_agent_runtime() -> VAPAgentRuntime:
+    global AGENT_TOOLS_REGISTERED
+    with AGENT_TOOLS_LOCK:
+        if not AGENT_TOOLS_REGISTERED:
+            register_vap_agent_tools(AGENT_RUNTIME)
+            AGENT_TOOLS_REGISTERED = True
+    return AGENT_RUNTIME
+
+
+def get_agent_status_payload() -> dict[str, Any]:
+    return {
+        **get_agent_runtime().status(),
+        "server_session_id": SERVER_SESSION_ID,
+    }
+
+
+def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
+    runtime.register_tool(
+        AgentTool(
+            name="get_config",
+            description="Read the saved VAP config payload.",
+            safety="read_only",
+            parameters=object_schema(),
+            handler=lambda args: {"config": current_config_payload()},
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="get_run_status",
+            description="Read current VAP run status without changing any process.",
+            safety="read_only",
+            parameters=object_schema(),
+            handler=lambda args: get_run_state_snapshot(),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="read_log_file",
+            description="Read one current run log file.",
+            safety="read_only",
+            parameters=object_schema(
+                {
+                    "file_name": {
+                        "type": "string",
+                        "enum": ["vap_log.txt", "vllm_deploy.log", "vllm_bench.log"],
+                    }
+                },
+                ["file_name"],
+            ),
+            handler=lambda args: read_current_log_file(str(args["file_name"])),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="validate_config",
+            description="Validate a VAP config payload. If config is omitted, validate the saved config.",
+            safety="safe",
+            parameters=object_schema({"config": {"type": "object"}}),
+            handler=lambda args: validate_config_payload(args.get("config") or current_config_payload()),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="check_ports",
+            description="Check local VAP service ports. If config is omitted, use the saved config.",
+            safety="safe",
+            parameters=object_schema({"config": {"type": "object"}}),
+            handler=lambda args: check_config_ports(args.get("config") or current_config_payload()),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="check_resources",
+            description="Check model paths, Docker image, devices, and mount sources.",
+            safety="safe",
+            parameters=object_schema({"config": {"type": "object"}}),
+            handler=lambda args: check_config_resources(args.get("config") or current_config_payload()),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="inspect_latest_trace",
+            description="Inspect the latest profiling trace metadata and a small preview. Defaults to merged_trace.",
+            safety="read_only",
+            parameters=object_schema(
+                {
+                    "preferred_name": {
+                        "type": "string",
+                        "description": "Preferred trace filename prefix. Defaults to merged_trace.",
+                    },
+                    "run_dir": {
+                        "type": "string",
+                        "description": "Optional run directory under logs.",
+                    },
+                }
+            ),
+            handler=inspect_latest_trace,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="run_perfetto_sql",
+            description="Run a whitelisted Perfetto SQL query on the latest trace. Use this for detailed trace analysis without loading raw JSON into the LLM.",
+            safety="read_only",
+            parameters=object_schema(
+                {
+                    "query_name": {
+                        "type": "string",
+                        "enum": sorted(PERFETTO_SQL_QUERIES),
+                    },
+                    "preferred_name": {
+                        "type": "string",
+                        "description": "Preferred trace filename prefix. Defaults to merged_trace.",
+                    },
+                    "run_dir": {
+                        "type": "string",
+                        "description": "Optional run directory under logs.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                },
+                ["query_name"],
+            ),
+            handler=run_perfetto_sql,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="run_torchprofiler_skill",
+            description="Run a TorchProfilerTraceSkill workflow made of VAP-owned Perfetto SQL presets.",
+            safety="read_only",
+            parameters=object_schema(
+                {
+                    "workflow": {
+                        "type": "string",
+                        "enum": sorted(torchprofiler_skill_workflows()),
+                    },
+                    "preferred_name": {
+                        "type": "string",
+                        "description": "Preferred trace filename prefix. Defaults to merged_trace.",
+                    },
+                    "run_dir": {
+                        "type": "string",
+                        "description": "Optional run directory under logs.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                },
+                ["workflow"],
+            ),
+            handler=run_torchprofiler_skill,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="prepare_download_artifact",
+            description="Prepare a safe download link for current run logs or the trace archive.",
+            safety="safe",
+            parameters=object_schema(
+                {
+                    "artifact": {
+                        "type": "string",
+                        "enum": ["vap_log", "vllm_deploy_log", "vllm_bench_log", "trace_archive"],
+                    }
+                },
+                ["artifact"],
+            ),
+            handler=prepare_download_artifact,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="prepare_run",
+            description="Validate whether a config is ready to run without starting VAP.",
+            safety="safe",
+            parameters=object_schema({"config": {"type": "object"}}),
+            handler=lambda args: validate_config_payload(args.get("config") or current_config_payload()),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="start_run",
+            description="Start a VAP run. Requires explicit user approval.",
+            safety="requires_approval",
+            parameters=object_schema({"config": {"type": "object"}}),
+            handler=lambda args: start_vap_run(
+                save_temp_config(args["config"]) if isinstance(args.get("config"), dict) else None
+            ),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="stop_run",
+            description="Stop the active VAP run. Requires explicit user approval.",
+            safety="requires_approval",
+            parameters=object_schema(),
+            handler=lambda args: stop_vap_run(),
+        )
+    )
 
 
 class VAPConfigHandler(BaseHTTPRequestHandler):
@@ -1050,11 +1816,17 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/log-file":
             self.handle_get_log_file(parsed.query)
             return
+        if parsed.path == "/api/log-file/download":
+            self.handle_log_download(parsed.query)
+            return
         if parsed.path == "/api/run/status":
             self.handle_run_status()
             return
         if parsed.path == "/api/profile/archive":
             self.handle_profile_archive(parsed.query)
+            return
+        if parsed.path == "/api/agent/status":
+            self.handle_agent_status()
             return
         if parsed.path.startswith("/public/"):
             self.serve_static(parsed.path.removeprefix("/public/"))
@@ -1087,6 +1859,11 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             "/api/check-resources": self.handle_check_resources,
             "/api/run": self.handle_run_start,
             "/api/run/stop": self.handle_run_stop,
+            "/api/agent/unlock": self.handle_agent_unlock,
+            "/api/agent/chat": self.handle_agent_chat,
+            "/api/agent/chat/stream": self.handle_agent_chat_stream,
+            "/api/agent/approve": self.handle_agent_approve,
+            "/api/agent/cancel-action": self.handle_agent_cancel_action,
         }
         handler = routes.get(parsed.path)
         if handler is None:
@@ -1100,7 +1877,18 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             )
         except ValueError as exc:
             self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except TimeoutError as exc:
+            self.send_json(
+                {"message": f"Request timed out: {exc}"},
+                HTTPStatus.GATEWAY_TIMEOUT,
+            )
         except Exception as exc:
+            if "timed out" in str(exc).lower():
+                self.send_json(
+                    {"message": f"Request timed out: {exc}"},
+                    HTTPStatus.GATEWAY_TIMEOUT,
+                )
+                return
             self.send_json(
                 {"message": f"Server handling failed: {exc}"},
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -1152,6 +1940,20 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
                 {"message": f"Failed to read log: {exc}"}, HTTPStatus.BAD_REQUEST
             )
 
+    def handle_log_download(self, query: str) -> None:
+        try:
+            params = parse_qs(query)
+            file_name = params.get("name", [""])[0]
+            download_name, content = build_log_download(file_name)
+        except Exception as exc:
+            self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_binary(
+            content,
+            "text/plain; charset=utf-8",
+            f'attachment; filename="{download_name}"',
+        )
+
     def handle_run_status(self) -> None:
         self.send_json(
             {
@@ -1180,6 +1982,58 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
     def handle_validate(self) -> None:
         payload = self.read_json_body()
         self.send_json(validate_config_payload(payload))
+
+    def handle_agent_status(self) -> None:
+        self.send_json(get_agent_status_payload())
+
+    def handle_agent_unlock(self) -> None:
+        payload = self.read_json_body()
+        subscription_key = payload.get("subscription_key")
+        if not isinstance(subscription_key, str):
+            raise ValueError("subscription_key is required")
+        self.send_json(
+            {
+                **get_agent_runtime().unlock(subscription_key),
+                "server_session_id": SERVER_SESSION_ID,
+            }
+        )
+
+    def handle_agent_chat(self) -> None:
+        payload = self.read_json_body()
+        self.send_json(get_agent_runtime().chat(payload))
+
+    def handle_agent_chat_stream(self) -> None:
+        payload = self.read_json_body()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def send_event(event: dict[str, Any]) -> None:
+            content = f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+            self.wfile.write(content)
+            self.wfile.flush()
+
+        try:
+            for event in get_agent_runtime().stream_chat(payload):
+                send_event(event)
+        except Exception as exc:
+            send_event({"type": "error", "message": str(exc)})
+
+    def handle_agent_approve(self) -> None:
+        payload = self.read_json_body()
+        approval_id = payload.get("approval_id")
+        if not isinstance(approval_id, str):
+            raise ValueError("approval_id is required")
+        self.send_json(get_agent_runtime().approve(approval_id))
+
+    def handle_agent_cancel_action(self) -> None:
+        payload = self.read_json_body()
+        approval_id = payload.get("approval_id")
+        if not isinstance(approval_id, str):
+            raise ValueError("approval_id is required")
+        self.send_json(get_agent_runtime().cancel(approval_id))
 
     def handle_save_temp_config(self) -> None:
         payload = self.read_json_body()
@@ -1287,6 +2141,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> None:
+    ensure_vap_home()
     parser = argparse.ArgumentParser(description="VAP config management UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8899)
@@ -1303,6 +2158,7 @@ def main(argv: list[str] | None = None) -> None:
 
     server = ThreadingHTTPServer((args.host, args.port), VAPConfigHandler)
     print(f"VAP config UI started: http://{args.host}:{args.port}")
+    print(f"VAP home: {VAP_HOME}")
     print(f"Temporary config files will be saved to: {TEMP_CONFIG_DIR}")
     try:
         server.serve_forever()

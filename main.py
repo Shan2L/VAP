@@ -12,6 +12,13 @@ import shutil
 import subprocess
 
 from config import VAPConfig
+from runtime_paths import (
+    APP_DIR,
+    VAP_BIN_DIR,
+    VAP_LOGS_DIR,
+    VAP_PERFETTO_HOME,
+    ensure_vap_home,
+)
 
 import docker
 from docker.types import Mount, Ulimit
@@ -255,6 +262,20 @@ def terminate_process(process: subprocess.Popen | None, timeout_sec: float = 5.0
         process.wait()
 
 
+def write_visualization_pids(
+    log_dir: str, processes: dict[str, subprocess.Popen | None]
+) -> None:
+    payload = {
+        name: process.pid
+        for name, process in processes.items()
+        if process is not None and process.poll() is None
+    }
+    path = os.path.join(log_dir, "visualization_pids.json")
+    with open(path, "w", encoding="utf-8") as pid_file:
+        json.dump(payload, pid_file, indent=2)
+        pid_file.write("\n")
+
+
 def collect_pytorch_trace_files(profile_dir: str) -> list[str]:
     patterns = ("*.pt.trace.json.gz", "*.trace.json.gz", "*.trace.json")
     traces: list[str] = []
@@ -263,12 +284,23 @@ def collect_pytorch_trace_files(profile_dir: str) -> list[str]:
     traces = [
         trace
         for trace in traces
-        if not os.path.basename(trace).startswith("merged_trace")
+        if "merged_trace" not in os.path.basename(trace)
     ]
     return sorted(dict.fromkeys(traces))
 
 
-def merge_pytorch_traces_for_perfetto(profile_dir: str) -> str | None:
+def safe_filename_part(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value).strip("_")
+
+
+def merged_trace_output_file(profile_dir: str, config: VAPConfig) -> str:
+    run_stamp = os.path.basename(os.path.dirname(profile_dir.rstrip(os.sep)))
+    model_name = safe_filename_part(config.model_cfg.model_name.replace("/", "_"))
+    prefix = "-".join(part for part in (run_stamp, model_name) if part)
+    return os.path.join(profile_dir, f"{prefix}-merged_trace.json")
+
+
+def merge_pytorch_traces_for_perfetto(profile_dir: str, config: VAPConfig) -> str | None:
     trace_files = collect_pytorch_trace_files(profile_dir)
     if not trace_files:
         return None
@@ -278,7 +310,7 @@ def merge_pytorch_traces_for_perfetto(profile_dir: str) -> str | None:
         )
         return trace_files[0]
 
-    output_file = os.path.join(profile_dir, "merged_trace.json")
+    output_file = merged_trace_output_file(profile_dir, config)
     try:
         from TraceLens import TraceFuse
 
@@ -292,8 +324,8 @@ def merge_pytorch_traces_for_perfetto(profile_dir: str) -> str | None:
         return trace_files[0]
 
 
-def find_perfetto_trace(profile_dir: str) -> str | None:
-    merged_or_single_trace = merge_pytorch_traces_for_perfetto(profile_dir)
+def find_perfetto_trace(profile_dir: str, config: VAPConfig) -> str | None:
+    merged_or_single_trace = merge_pytorch_traces_for_perfetto(profile_dir, config)
     if merged_or_single_trace:
         return merged_or_single_trace
 
@@ -303,8 +335,20 @@ def find_perfetto_trace(profile_dir: str) -> str | None:
     return None
 
 
+def find_trace_processor(app_dir: str) -> str | None:
+    candidates = [
+        str(VAP_BIN_DIR / "trace_processor"),
+        os.path.join(app_dir, "bin", "trace_processor"),
+        os.path.join(app_dir, "trace_processor"),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def visualize_profile(config: VAPConfig, log_dir: str):
-    app_dir = os.path.dirname(__file__)
+    app_dir = str(APP_DIR)
     profile_dir = os.path.join(log_dir, "vllm-profile")
     venv_python = os.path.join(app_dir, ".venv", "bin", "python")
     tensorboard_cmd = [
@@ -332,16 +376,14 @@ def visualize_profile(config: VAPConfig, log_dir: str):
             config.profiler_cfg.tensorboard_port,
         )
 
-    trace_path = find_perfetto_trace(profile_dir)
-    trace_processor = os.path.join(app_dir, "bin", "trace_processor")
+    trace_path = find_perfetto_trace(profile_dir, config)
+    trace_processor = find_trace_processor(app_dir)
     if trace_path is None:
         logger.warning("No Perfetto-compatible trace found under %s", profile_dir)
-    elif not os.path.exists(trace_processor):
-        logger.warning(
-            "%s is not available; skip Perfetto visualization", trace_processor
-        )
+    elif trace_processor is None:
+        logger.warning("trace_processor is not available; skip Perfetto visualization")
     else:
-        perfetto_home = os.path.join(app_dir, "bin", "perfetto-home")
+        perfetto_home = str(VAP_PERFETTO_HOME)
         os.makedirs(perfetto_home, exist_ok=True)
         perfetto_env = os.environ.copy()
         perfetto_env["HOME"] = perfetto_home
@@ -369,6 +411,10 @@ def visualize_profile(config: VAPConfig, log_dir: str):
     processes = [
         process for process in (tensorboard_process, perfetto_process) if process
     ]
+    write_visualization_pids(
+        log_dir,
+        {"tensorboard": tensorboard_process, "perfetto": perfetto_process},
+    )
     if not processes:
         return
 
@@ -381,6 +427,7 @@ def visualize_profile(config: VAPConfig, log_dir: str):
     finally:
         for process in processes:
             terminate_process(process)
+        write_visualization_pids(log_dir, {})
 
 
 def clean(log_dir: str):
@@ -484,6 +531,7 @@ def run(args, log_dir: str):
 
 
 def main(argv: list[str] | None = None) -> None:
+    ensure_vap_home()
     argparser = argparse.ArgumentParser()
     subparsers = argparser.add_subparsers(dest="command")
     run_parser = subparsers.add_parser("run", help="Run VAP")
@@ -491,8 +539,7 @@ def main(argv: list[str] | None = None) -> None:
     run_parser.add_argument("--config", type=str, default="example-config.json")
     args = argparser.parse_args(argv)
 
-    cwd = os.getcwd()
-    log_dir = os.path.join(cwd, "logs")
+    log_dir = str(VAP_LOGS_DIR)
 
     if args.command == "run":
         run(args, log_dir)

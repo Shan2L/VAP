@@ -1,0 +1,151 @@
+# Original SQL presets for PyTorch profiler / vLLM Perfetto traces.
+# Inspired by the evidence-driven workflow pattern in Gracker/Perfetto-Skills,
+# but no SQL is copied from that project.
+
+trace_overview: |
+  SELECT
+    (SELECT COUNT(*) FROM slice) AS slice_count,
+    (SELECT COUNT(*) FROM thread_track) AS thread_track_count,
+    (SELECT COUNT(*) FROM process) AS process_count,
+    (SELECT COUNT(*) FROM sched) AS sched_count;
+
+top_slices: |
+  SELECT
+    name,
+    dur / 1000000.0 AS dur_ms,
+    ts / 1000000.0 AS ts_ms
+  FROM slice
+  WHERE dur > 0
+  ORDER BY dur DESC
+  LIMIT {limit};
+
+category_duration: |
+  SELECT
+    COALESCE(category, 'uncategorized') AS category,
+    COUNT(*) AS event_count,
+    SUM(dur) / 1000000.0 AS total_dur_ms,
+    AVG(dur) / 1000000.0 AS avg_dur_ms,
+    MAX(dur) / 1000000.0 AS max_dur_ms
+  FROM slice
+  WHERE dur > 0
+  GROUP BY category
+  ORDER BY total_dur_ms DESC
+  LIMIT {limit};
+
+sync_waits: |
+  SELECT
+    name,
+    dur / 1000000.0 AS dur_ms,
+    ts / 1000000.0 AS ts_ms
+  FROM slice
+  WHERE dur > 0
+    AND (
+      name LIKE '%Synchronize%'
+      OR name LIKE '%sync%'
+      OR name LIKE '%Wait%'
+      OR name LIKE '%wait%'
+      OR name LIKE '%barrier%'
+    )
+  ORDER BY dur DESC
+  LIMIT {limit};
+
+gpu_kernels: |
+  SELECT
+    name,
+    dur / 1000000.0 AS dur_ms,
+    ts / 1000000.0 AS ts_ms
+  FROM slice
+  WHERE dur > 0
+    AND (
+      category LIKE '%kernel%'
+      OR name LIKE '%Kernel%'
+      OR name LIKE '%hipLaunchKernel%'
+    )
+  ORDER BY dur DESC
+  LIMIT {limit};
+
+operator_hotspots: |
+  SELECT
+    name,
+    COUNT(*) AS calls,
+    SUM(dur) / 1000000.0 AS total_dur_ms,
+    AVG(dur) / 1000000.0 AS avg_dur_ms,
+    MAX(dur) / 1000000.0 AS max_dur_ms
+  FROM slice
+  WHERE dur > 0
+    AND (
+      name LIKE 'aten::%'
+      OR name LIKE 'vllm%'
+      OR name LIKE '%attention%'
+      OR name LIKE '%Attention%'
+    )
+  GROUP BY name
+  ORDER BY total_dur_ms DESC
+  LIMIT {limit};
+
+aten_hotspots: |
+  SELECT
+    name,
+    COUNT(*) AS calls,
+    SUM(dur) / 1000000.0 AS total_dur_ms,
+    AVG(dur) / 1000000.0 AS avg_dur_ms,
+    MAX(dur) / 1000000.0 AS max_dur_ms
+  FROM slice
+  WHERE dur > 0
+    AND name LIKE 'aten::%'
+  GROUP BY name
+  ORDER BY total_dur_ms DESC
+  LIMIT {limit};
+
+memory_copies: |
+  SELECT
+    name,
+    dur / 1000000.0 AS dur_ms,
+    ts / 1000000.0 AS ts_ms
+  FROM slice
+  WHERE dur > 0
+    AND (
+      category LIKE '%memcpy%'
+      OR name LIKE '%Memcpy%'
+      OR name LIKE '%memcpy%'
+      OR category LIKE '%gpu_memcpy%'
+    )
+  ORDER BY dur DESC
+  LIMIT {limit};
+
+rank_activity: |
+  SELECT
+    EXTRACT_ARG(arg_set_id, 'rank') AS rank,
+    COUNT(*) AS event_count,
+    SUM(dur) / 1000000.0 AS total_dur_ms,
+    MAX(dur) / 1000000.0 AS max_dur_ms
+  FROM slice
+  WHERE dur > 0
+  GROUP BY rank
+  ORDER BY total_dur_ms DESC
+  LIMIT {limit};
+
+rank_longest_slices: |
+  SELECT
+    EXTRACT_ARG(arg_set_id, 'rank') AS rank,
+    name,
+    dur / 1000000.0 AS dur_ms,
+    ts / 1000000.0 AS ts_ms
+  FROM slice
+  WHERE dur > 0
+  ORDER BY dur DESC
+  LIMIT {limit};
+
+timeline_gaps: |
+  SELECT
+    name,
+    dur / 1000000.0 AS dur_ms,
+    ts / 1000000.0 AS ts_ms
+  FROM slice
+  WHERE dur > 0
+    AND (
+      name LIKE '%idle%'
+      OR name LIKE '%Idle%'
+    )
+  ORDER BY dur DESC
+  LIMIT {limit};
