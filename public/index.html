@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,9 +8,9 @@
     (() => {
       try {
         const savedTheme = localStorage.getItem("vap-theme");
-        document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "dark";
+        document.documentElement.dataset.theme = savedTheme === "dark" ? "dark" : "light";
       } catch {
-        document.documentElement.dataset.theme = "dark";
+        document.documentElement.dataset.theme = "light";
       }
     })();
   </script>
@@ -235,6 +235,31 @@
       transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
     }
 
+    .button-icon,
+    .action-icon,
+    .log-title-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
+
+    .button-icon {
+      margin-right: 6px;
+      font-size: 14px;
+    }
+
+    .action-icon {
+      margin-right: 4px;
+      font-size: 12px;
+    }
+
+    .log-title-icon {
+      width: 18px;
+      font-size: 14px;
+    }
+
     button:hover:not(:disabled) {
       border-color: var(--accent);
       background: rgba(18, 30, 72, 0.92);
@@ -355,9 +380,9 @@
 
     main {
       display: grid;
-      grid-template-columns: minmax(420px, 1fr) 12px minmax(460px, 760px);
+      grid-template-columns: minmax(420px, 2fr) 12px minmax(460px, 1fr);
       gap: 12px;
-      width: min(1760px, calc(100% - 32px));
+      width: min(1640px, calc(100% - 32px));
       margin: 16px auto;
       align-items: start;
     }
@@ -867,6 +892,13 @@
       border-bottom: none;
     }
 
+    .validation-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+
     .validation-head h3 {
       margin: 0 0 4px;
       font-size: 16px;
@@ -1006,6 +1038,11 @@
       }
 
       .splitter {
+        position: static;
+        height: auto;
+      }
+
+      .splitter {
         display: none;
       }
 
@@ -1045,12 +1082,14 @@
         <span class="theme-icon moon-icon" aria-hidden="true">☾</span>
         <span class="theme-knob" aria-hidden="true"></span>
       </button>
-      <button id="btn-reload" type="button">Reload</button>
-      <button id="btn-validate" type="button">Validate Config</button>
-      <button id="btn-save" type="button">Download Config</button>
-      <button class="primary" id="btn-run" type="button">Run</button>
-      <button id="btn-tensorboard" type="button" disabled>TensorBoard</button>
-      <button class="danger" id="btn-stop" type="button" disabled>Stop</button>
+      <button id="btn-reload" type="button"><span class="button-icon" aria-hidden="true">↻</span>Reload</button>
+      <button id="btn-validate" type="button"><span class="button-icon" aria-hidden="true">✓</span>Validate Config</button>
+      <button id="btn-save" type="button"><span class="button-icon" aria-hidden="true">⇩</span>Download Config</button>
+      <button class="primary" id="btn-run" type="button"><span class="button-icon" aria-hidden="true">▶</span>Run</button>
+      <button class="danger" id="btn-stop" type="button" disabled><span class="button-icon" aria-hidden="true">■</span>Stop</button>
+      <button id="btn-tensorboard" type="button" disabled><span class="button-icon" aria-hidden="true">▣</span>TensorBoard</button>
+      <button id="btn-perfetto" type="button" disabled><span class="button-icon" aria-hidden="true">◫</span>Perfetto</button>
+      <button id="btn-profile-download" type="button" disabled><span class="button-icon" aria-hidden="true">⇩</span>Download Trace</button>
     </div>
   </header>
 
@@ -1088,15 +1127,15 @@
         <div class="section-body">
           <p class="hint">GPU Devices</p>
           <div class="list-editor" id="devices-list"></div>
-          <button class="small add-row" type="button" id="add-device">+ Add Device</button>
+          <button class="small add-row" type="button" id="add-device"><span class="button-icon" aria-hidden="true">＋</span>Add Device</button>
 
           <p class="hint" style="margin-top:18px">Mounts</p>
           <div class="list-editor" id="mounts-list"></div>
-          <button class="small add-row" type="button" id="add-mount">+ Add Mount</button>
+          <button class="small add-row" type="button" id="add-mount"><span class="button-icon" aria-hidden="true">＋</span>Add Mount</button>
 
           <p class="hint" style="margin-top:18px">Environment Variables</p>
           <div class="list-editor" id="env-list"></div>
-          <button class="small add-row" type="button" id="add-env">+ Add Environment Variable</button>
+          <button class="small add-row" type="button" id="add-env"><span class="button-icon" aria-hidden="true">＋</span>Add Environment Variable</button>
         </div>
       </section>
 
@@ -1105,7 +1144,7 @@
         <div class="section-body">
           <p class="hint">Use <code>null</code> for flag-only arguments. <code>--host</code> and <code>--port</code> are synchronized with Benchmark config.</p>
           <div class="kv-list" id="deploy-kv"></div>
-          <button class="small add-row" type="button" data-add-kv="deploy-kv">+ Add Argument</button>
+          <button class="small add-row" type="button" data-add-kv="deploy-kv"><span class="button-icon" aria-hidden="true">＋</span>Add Argument</button>
         </div>
       </section>
 
@@ -1114,7 +1153,7 @@
         <div class="section-body">
           <p class="hint">Use <code>true</code> / <code>false</code> for booleans. Rows can be added or removed freely.</p>
           <div class="kv-list" id="profiler-kv"></div>
-          <button class="small add-row" type="button" data-add-kv="profiler-kv">+ Add Argument</button>
+          <button class="small add-row" type="button" data-add-kv="profiler-kv"><span class="button-icon" aria-hidden="true">＋</span>Add Argument</button>
         </div>
       </section>
 
@@ -1123,7 +1162,7 @@
         <div class="section-body">
           <p class="hint"><code>--host</code> and <code>--port</code> are synchronized with vLLM deploy config to avoid runtime mismatches.</p>
           <div class="kv-list" id="bench-kv"></div>
-          <button class="small add-row" type="button" data-add-kv="bench-kv">+ Add Argument</button>
+          <button class="small add-row" type="button" data-add-kv="bench-kv"><span class="button-icon" aria-hidden="true">＋</span>Add Argument</button>
         </div>
       </section>
     </div>
@@ -1134,12 +1173,12 @@
       <div class="log-item active" data-log-panel="run">
         <button class="log-toggle" type="button" data-open-log="run">
           <span class="log-heading">
-            <span class="log-title">Run Log</span>
+            <span class="log-title"><span class="log-title-icon" aria-hidden="true">◉</span>Run Log</span>
             <span class="status" id="run-status">Idle</span>
           </span>
           <span class="log-actions">
-            <span class="log-action status" data-copy-log="log-output">Copy</span>
-            <span class="log-action status" data-download-log="log-output" data-file-name="vap_log.txt">Download</span>
+            <span class="log-action status" data-copy-log="log-output"><span class="action-icon" aria-hidden="true">⧉</span>Copy</span>
+            <span class="log-action status" data-download-log="log-output" data-file-name="vap_log.txt"><span class="action-icon" aria-hidden="true">⇩</span>Download</span>
           </span>
         </button>
         <div class="log-body">
@@ -1149,12 +1188,12 @@
       <div class="log-item" data-log-panel="deploy">
         <button class="log-toggle" type="button" data-open-log="deploy">
           <span class="log-heading">
-            <span class="log-title">vLLM Deploy Log</span>
+            <span class="log-title"><span class="log-title-icon" aria-hidden="true">▤</span>vLLM Deploy Log</span>
             <span class="status">vllm_deploy.log</span>
           </span>
           <span class="log-actions">
-            <span class="log-action status" data-copy-log="deploy-log-output">Copy</span>
-            <span class="log-action status" data-download-log="deploy-log-output" data-file-name="vllm_deploy.log">Download</span>
+            <span class="log-action status" data-copy-log="deploy-log-output"><span class="action-icon" aria-hidden="true">⧉</span>Copy</span>
+            <span class="log-action status" data-download-log="deploy-log-output" data-file-name="vllm_deploy.log"><span class="action-icon" aria-hidden="true">⇩</span>Download</span>
           </span>
         </button>
         <div class="log-body">
@@ -1164,12 +1203,12 @@
       <div class="log-item" data-log-panel="bench">
         <button class="log-toggle" type="button" data-open-log="bench">
           <span class="log-heading">
-            <span class="log-title">vLLM Benchmark Log</span>
+            <span class="log-title"><span class="log-title-icon" aria-hidden="true">◇</span>vLLM Benchmark Log</span>
             <span class="status">vllm_bench.log</span>
           </span>
           <span class="log-actions">
-            <span class="log-action status" data-copy-log="bench-log-output">Copy</span>
-            <span class="log-action status" data-download-log="bench-log-output" data-file-name="vllm_bench.log">Download</span>
+            <span class="log-action status" data-copy-log="bench-log-output"><span class="action-icon" aria-hidden="true">⧉</span>Copy</span>
+            <span class="log-action status" data-download-log="bench-log-output" data-file-name="vllm_bench.log"><span class="action-icon" aria-hidden="true">⇩</span>Download</span>
           </span>
         </button>
         <div class="log-body">
@@ -1186,7 +1225,7 @@
           <h3 id="validation-title">Config Validation Progress</h3>
           <p id="validation-subtitle">Preparing to validate the current form config</p>
         </div>
-        <button class="small" id="validation-close" type="button">Close</button>
+        <button class="small" id="validation-close" type="button"><span class="button-icon" aria-hidden="true">×</span>Close</button>
       </div>
       <div class="progress-wrap">
         <div class="progress-meta">
@@ -1200,7 +1239,10 @@
       <div class="validation-list" id="validation-list"></div>
       <div class="validation-foot">
         <span id="validation-summary">Waiting to start</span>
-        <button class="primary small" id="validation-ok" type="button">OK</button>
+        <div class="validation-actions">
+          <button class="primary small" id="validation-run" type="button" hidden><span class="button-icon" aria-hidden="true">▶</span>Run</button>
+          <button class="primary small" id="validation-ok" type="button"><span class="button-icon" aria-hidden="true">✓</span>OK</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1252,6 +1294,7 @@
         torch_profiler_use_gzip: true,
         delay_iterations: 0,
         max_iterations: 10,
+        tensorboard_port: 6006,
       },
       container_cfg: {
         image_name: "mkmhub.amd.com/sw-cserocmopt-dev/release/wuxi_w7800/vllm0.16.0_pytorch2.9.1_rocm7.2",
@@ -1265,6 +1308,10 @@
             target: "/home/sylvan",
             source: "/home/DomainUsers/syliu",
           },
+          {
+            target: "/home/nfs_share/huggingface/",
+            source: "/home/nfs_share/huggingface/",
+          },
         ],
         env_vars: {
           VLLM_USE_TRITON_FLASH_ATTN: "1",
@@ -1272,7 +1319,7 @@
           PYTORCH_TUNABLEOP_TUNING: "0",
           PYTORCH_TUNABLEOP_VERBOSE: "0",
           PYTHONPATH: "/opt/rocm/lib",
-          NCCL_P2P_DISABLE: "0",
+          NCCL_P2P_DISABLE: "1",
           VLLM_WORKER_MULTIPROC_METHOD: "spawn",
           VLLM_MLA_DISABLE: "1",
           NCCL_DEBUG: "VERSION",
@@ -1288,6 +1335,7 @@
     const validationProgressText = document.getElementById("validation-progress-text");
     const validationProgressPercent = document.getElementById("validation-progress-percent");
     const validationProgressBar = document.getElementById("validation-progress-bar");
+    const validationRunButton = document.getElementById("validation-run");
     const logOutput = document.getElementById("log-output");
     const deployLogOutput = document.getElementById("deploy-log-output");
     const benchLogOutput = document.getElementById("bench-log-output");
@@ -1295,20 +1343,28 @@
     const btnTheme = document.getElementById("btn-theme");
     const btnRun = document.getElementById("btn-run");
     const btnTensorBoard = document.getElementById("btn-tensorboard");
+    const btnPerfetto = document.getElementById("btn-perfetto");
+    const btnProfileDownload = document.getElementById("btn-profile-download");
     const btnStop = document.getElementById("btn-stop");
     const mainLayout = document.querySelector("main");
     const layoutSplitter = document.getElementById("layout-splitter");
     const THEME_KEY = "vap-theme";
     const LAYOUT_RATIO_KEY = "vap-layout-config-ratio";
-    const DEFAULT_CONFIG_RATIO = 0.56;
+    const LAYOUT_RATIO_VERSION_KEY = "vap-layout-config-ratio-version";
+    const CONFIG_DRAFT_KEY = "vap-config-draft";
+    const LAYOUT_RATIO_VERSION = "2";
+    const DEFAULT_CONFIG_RATIO = 2 / 3;
     const CONFIG_MIN_WIDTH = 420;
     const LOG_MIN_WIDTH = 460;
+    const DEFAULT_VISIBLE_DEVICE_COUNT = 8;
     const SPLITTER_WIDTH = 12;
     let statusTimer = null;
     let currentConfig = DEFAULT_CONFIG;
+    let currentRunDir = null;
+    let draftSaveTimer = null;
 
     function getCurrentTheme() {
-      return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+      return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
     }
 
     function applyTheme(theme) {
@@ -1327,6 +1383,11 @@
     }
 
     function getSavedLayoutRatio() {
+      if (localStorage.getItem(LAYOUT_RATIO_VERSION_KEY) !== LAYOUT_RATIO_VERSION) {
+        localStorage.setItem(LAYOUT_RATIO_VERSION_KEY, LAYOUT_RATIO_VERSION);
+        localStorage.setItem(LAYOUT_RATIO_KEY, String(DEFAULT_CONFIG_RATIO));
+        return DEFAULT_CONFIG_RATIO;
+      }
       const rawRatio = Number(localStorage.getItem(LAYOUT_RATIO_KEY));
       if (!Number.isFinite(rawRatio)) return DEFAULT_CONFIG_RATIO;
       return Math.min(0.8, Math.max(0.25, rawRatio));
@@ -1336,8 +1397,8 @@
       const styles = getComputedStyle(mainLayout);
       const gap = Number.parseFloat(styles.columnGap) || 0;
       const availableWidth = mainLayout.clientWidth - SPLITTER_WIDTH - gap * 2;
-      const minConfigWidth = Math.min(CONFIG_MIN_WIDTH, availableWidth * 0.55);
-      const minLogWidth = Math.min(LOG_MIN_WIDTH, availableWidth * 0.55);
+      const minConfigWidth = Math.min(CONFIG_MIN_WIDTH, availableWidth * 0.45);
+      const minLogWidth = Math.min(LOG_MIN_WIDTH, availableWidth * 0.33);
       return { availableWidth, gap, minConfigWidth, minLogWidth };
     }
 
@@ -1376,7 +1437,8 @@
         if (!document.body.classList.contains("resizing-layout") || !isWideLayout()) return;
         const { availableWidth, gap } = getLayoutMetrics();
         const rect = mainLayout.getBoundingClientRect();
-        const configWidth = event.clientX - rect.left - gap * 0.5;
+        const configStart = rect.left;
+        const configWidth = event.clientX - configStart - gap * 0.5;
         saveAndApplyLayoutRatio(configWidth / availableWidth);
       });
       layoutSplitter.addEventListener("pointerup", (event) => {
@@ -1422,6 +1484,37 @@
       }
     }
 
+    function saveConfigDraft() {
+      try {
+        localStorage.setItem(CONFIG_DRAFT_KEY, JSON.stringify(buildConfig()));
+      } catch (error) {
+        console.warn("Failed to save config draft", error);
+      }
+    }
+
+    function scheduleConfigDraftSave() {
+      clearTimeout(draftSaveTimer);
+      draftSaveTimer = setTimeout(saveConfigDraft, 120);
+    }
+
+    function loadConfigDraft() {
+      const rawDraft = localStorage.getItem(CONFIG_DRAFT_KEY);
+      if (!rawDraft) return false;
+      try {
+        fillForm(JSON.parse(rawDraft));
+        showToast("Restored unsaved config draft");
+        return true;
+      } catch (error) {
+        localStorage.removeItem(CONFIG_DRAFT_KEY);
+        console.warn("Discarded invalid config draft", error);
+        return false;
+      }
+    }
+
+    function clearConfigDraft() {
+      localStorage.removeItem(CONFIG_DRAFT_KEY);
+    }
+
     function setRunState(state, label) {
       runStatus.textContent = label;
       runStatus.className = "status" + (state ? " " + state : "");
@@ -1433,6 +1526,13 @@
       btnTensorBoard.classList.toggle("tensorboard-ready", isReady);
       btnTensorBoard.disabled = !isReady;
       btnTensorBoard.title = isReady ? "TensorBoard is ready. Click to open it." : "Open TensorBoard";
+    }
+
+    function setProfileActionsReady(isReady) {
+      btnPerfetto.disabled = !isReady;
+      btnProfileDownload.disabled = !isReady;
+      btnPerfetto.title = isReady ? "Open Perfetto UI" : "Trace is not ready yet";
+      btnProfileDownload.title = isReady ? "Download current vllm-profile archive" : "Trace is not ready yet";
     }
 
     function startStatusPolling() {
@@ -1467,16 +1567,36 @@
     }
 
     async function loadLogFile(fileName, target) {
-      target.textContent = "Loading...";
+      const hasExistingContent = target.textContent.trim().length > 0;
+      if (!hasExistingContent) updateLogContent(target, "Loading...", { forceScroll: true });
       try {
         const response = await fetch(`/api/log-file?name=${encodeURIComponent(fileName)}`);
         const data = await readJsonResponse(response, "Failed to read log");
         if (!response.ok) throw new Error(data.message || "Failed to read log");
-        target.textContent = data.exists ? data.content : (data.message || `This run has not generated ${fileName} yet`);
-        scrollLogToBottom(target);
+        updateLogContent(
+          target,
+          data.exists ? data.content : (data.message || `This run has not generated ${fileName} yet`)
+        );
       } catch (error) {
-        target.textContent = error.message;
+        updateLogContent(target, error.message);
       }
+    }
+
+    function isNearLogBottom(target) {
+      return target.scrollHeight - target.scrollTop - target.clientHeight < 24;
+    }
+
+    function updateLogContent(target, content, options = {}) {
+      const nextContent = content || "";
+      const currentContent = target.textContent || "";
+      if (currentContent === nextContent) return;
+      const shouldFollow = options.forceScroll || isNearLogBottom(target);
+      if (!options.forceReplace && nextContent.startsWith(currentContent)) {
+        target.appendChild(document.createTextNode(nextContent.slice(currentContent.length)));
+      } else {
+        target.textContent = nextContent;
+      }
+      if (shouldFollow) scrollLogToBottom(target);
     }
 
     function scrollLogToBottom(target) {
@@ -1552,6 +1672,7 @@
     }
 
     function withDefaults(config) {
+      const { perfetto_port: _perfettoPort, ...profilerConfig } = config.profiler_cfg || {};
       return {
         ...DEFAULT_CONFIG,
         ...config,
@@ -1565,7 +1686,10 @@
         },
         vllm_deploy_cfg: config.vllm_deploy_cfg ?? DEFAULT_CONFIG.vllm_deploy_cfg,
         vllm_bench_cfg: config.vllm_bench_cfg ?? DEFAULT_CONFIG.vllm_bench_cfg,
-        profiler_cfg: config.profiler_cfg ?? DEFAULT_CONFIG.profiler_cfg,
+        profiler_cfg: {
+          ...DEFAULT_CONFIG.profiler_cfg,
+          ...profilerConfig,
+        },
         container_cfg: {
           ...DEFAULT_CONFIG.container_cfg,
           ...(config.container_cfg || {}),
@@ -1591,7 +1715,7 @@
       row.innerHTML = `
         <input class="kv-key mono" value="${escapeAttr(key)}" placeholder="key" />
         <input class="kv-value mono" value="${escapeAttr(value)}" placeholder="value / null" />
-        <button class="small danger" type="button">Delete</button>`;
+        <button class="small danger" type="button"><span class="button-icon" aria-hidden="true">×</span>Delete</button>`;
       const keyInput = row.querySelector(".kv-key");
       const valueInput = row.querySelector(".kv-value");
       keyInput.addEventListener("input", () => syncVllmKvRow(row, "key"));
@@ -1679,7 +1803,7 @@
       row.className = "list-row";
       row.innerHTML = `
         <input class="device-input mono" value="${escapeAttr(value)}" placeholder="/dev/dri/renderD128" />
-        <button class="small danger" type="button">Delete</button>`;
+        <button class="small danger" type="button"><span class="button-icon" aria-hidden="true">×</span>Delete</button>`;
       row.querySelector("button").addEventListener("click", () => row.remove());
       document.getElementById("devices-list").appendChild(row);
     }
@@ -1691,7 +1815,7 @@
       row.innerHTML = `
         <input class="mount-source mono" value="${escapeAttr(source)}" placeholder="host path" />
         <input class="mount-target mono" value="${escapeAttr(target)}" placeholder="container path" />
-        <button class="small danger" type="button">Delete</button>`;
+        <button class="small danger" type="button"><span class="button-icon" aria-hidden="true">×</span>Delete</button>`;
       row.querySelector("button").addEventListener("click", () => row.remove());
       document.getElementById("mounts-list").appendChild(row);
     }
@@ -1702,7 +1826,7 @@
       row.innerHTML = `
         <input class="env-key mono" value="${escapeAttr(key)}" placeholder="KEY" />
         <input class="env-value mono" value="${escapeAttr(value)}" placeholder="value" />
-        <button class="small danger" type="button">Delete</button>`;
+        <button class="small danger" type="button"><span class="button-icon" aria-hidden="true">×</span>Delete</button>`;
       row.querySelector("button").addEventListener("click", () => row.remove());
       document.getElementById("env-list").appendChild(row);
     }
@@ -1784,6 +1908,11 @@
       const data = await readJsonResponse(response, "Failed to load config");
       fillForm(data.config || data);
       showToast("Config loaded");
+    }
+
+    async function reloadConfigFromFile() {
+      clearConfigDraft();
+      await loadConfig();
     }
 
     async function saveConfig() {
@@ -1876,7 +2005,7 @@
         },
         {
           title: "Local Port Availability",
-          detail: "Check whether vLLM and Ray ports are already in use",
+          detail: "Check whether vLLM, Ray, TensorBoard, and Perfetto ports are already in use",
           run: async () => {
             const data = await checkPortsOnServer(config);
             if (data.valid === false) {
@@ -1926,6 +2055,7 @@
                 throw new Error(`${key} must be a non-negative integer`);
               }
             });
+            assertPort(config.profiler_cfg.tensorboard_port, "TensorBoard port");
             return `profiler=${config.profiler_cfg.profiler}, max_iterations=${config.profiler_cfg.max_iterations}`;
           },
         },
@@ -1943,6 +2073,25 @@
               assertTruthy(mount.target, `mounts[${index}].target is required`);
             });
             return `${devices.length} devices, ${mounts.length} mounts`;
+          },
+        },
+        {
+          title: "Tensor Parallel and GPU Devices",
+          detail: "Check whether -tp fits the visible container GPU devices",
+          run: () => {
+            const rawTensorParallelSize = config.vllm_deploy_cfg["-tp"];
+            const tensorParallelSize = rawTensorParallelSize === undefined || rawTensorParallelSize === null
+              ? 1
+              : Number(rawTensorParallelSize);
+            if (!Number.isInteger(tensorParallelSize) || tensorParallelSize < 1) {
+              throw new Error("vLLM deploy argument -tp must be a positive integer");
+            }
+            const devices = config.container_cfg?.devices || [];
+            const visibleDeviceCount = devices.length || DEFAULT_VISIBLE_DEVICE_COUNT;
+            if (tensorParallelSize > visibleDeviceCount) {
+              throw new Error(`-tp=${tensorParallelSize} exceeds visible GPU device count ${visibleDeviceCount}. Empty devices means all ${DEFAULT_VISIBLE_DEVICE_COUNT} GPUs are visible.`);
+            }
+            return `-tp=${tensorParallelSize}, visible GPU devices=${visibleDeviceCount}`;
           },
         },
         {
@@ -2068,14 +2217,7 @@
         body: JSON.stringify(config),
       });
       if (response.status === 404) {
-        const fallback = await fetch("/api/config/validate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(config),
-        });
-        const data = await readJsonResponse(fallback, "Backend validation failed");
-        if (!fallback.ok) throw new Error(data.error || data.message || "Backend validation failed");
-        return data;
+        throw new Error("Validation API does not exist. Restart the VAP config service and refresh the page.");
       }
       const data = await readJsonResponse(response, "Backend validation failed");
       if (!response.ok) throw new Error(data.error || data.message || "Backend validation failed");
@@ -2114,16 +2256,39 @@
       if (message) item.querySelector(".validation-message").textContent = message;
     }
 
+    function clearValidationRunAction() {
+      validationRunButton.hidden = true;
+      validationRunButton.disabled = false;
+      validationRunButton.className = "primary small";
+      validationRunButton.innerHTML = '<span class="button-icon" aria-hidden="true">▶</span>Run';
+      validationRunButton.onclick = null;
+    }
+
+    function showValidationRunAction(config, hasIssues) {
+      validationRunButton.hidden = false;
+      validationRunButton.disabled = false;
+      validationRunButton.className = hasIssues ? "danger small" : "primary small";
+      validationRunButton.innerHTML = hasIssues
+        ? '<span class="button-icon" aria-hidden="true">▶</span>Run Anyway'
+        : '<span class="button-icon" aria-hidden="true">▶</span>Run';
+      validationRunButton.onclick = () => {
+        validationRunButton.disabled = true;
+        validationModal.classList.remove("show");
+        runVap(config).catch((error) => showToast(error.message, "error"));
+      };
+    }
+
     function wait(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    async function validateConfig() {
+    async function validateConfig(options = {}) {
       const config = buildConfig();
       const steps = buildValidationSteps(config);
       const failures = [];
       const warnings = [];
 
+      clearValidationRunAction();
       openValidationModal(steps);
       for (const [index, step] of steps.entries()) {
         setValidationStep(index, "running", step.detail);
@@ -2145,20 +2310,27 @@
 
       if (failures.length) {
         validationSubtitle.textContent = `Done: ${steps.length - failures.length} passed, ${failures.length} failed`;
-        validationSummary.textContent = "The config has issues. Fix the failed items and validate again.";
+        validationSummary.textContent = options.allowRunAction
+          ? "The config has issues. Review them before deciding whether to run anyway."
+          : "The config has issues. Fix the failed items and validate again.";
+        if (options.allowRunAction) showValidationRunAction(config, true);
         showToast(`Validation failed: ${failures.length} items failed`, "error");
         return;
       }
 
       if (warnings.length) {
         validationSubtitle.textContent = `Done: ${steps.length - warnings.length} passed, ${warnings.length} warnings`;
-        validationSummary.textContent = "Config validation passed, but some unsupported checks need manual confirmation.";
+        validationSummary.textContent = options.allowRunAction
+          ? "Config validation passed with warnings. You can run it after reviewing the notes."
+          : "Config validation passed, but some unsupported checks need manual confirmation.";
+        if (options.allowRunAction) showValidationRunAction(config, false);
         showToast(`Validation passed with ${warnings.length} manual confirmations`);
         return;
       }
 
       validationSubtitle.textContent = `Done: all ${steps.length} items passed`;
       validationSummary.textContent = "Config validation passed. You can download the config or run it.";
+      if (options.allowRunAction) showValidationRunAction(config, false);
       showToast("Config validation passed");
     }
 
@@ -2169,15 +2341,21 @@
       const vapLogContent = data.logs?.["vap_log.txt"]?.exists
         ? data.logs["vap_log.txt"].content
         : (data.output || data.logs?.["vap_log.txt"]?.message || "");
-      logOutput.textContent = vapLogContent;
-      scrollLogToBottom(logOutput);
-      setTensorBoardReady(Boolean(data.running && vapLogContent.includes("TensorBoard started with pid")));
+      currentRunDir = data.run_dir || currentRunDir;
+      updateLogContent(logOutput, vapLogContent);
+      const profileReady = vapLogContent.includes("Profile archive has been saved to:");
+      setTensorBoardReady(Boolean(profileReady && vapLogContent.includes("TensorBoard started with pid")));
+      setProfileActionsReady(profileReady);
 
       if (data.running) {
         setRunState("running", "Running");
         startStatusPolling();
       } else if (data.exit_code !== null && data.exit_code !== undefined) {
-        setRunState(data.exit_code === 0 ? "done" : "error", data.exit_code === 0 ? "Done" : `Failed ${data.exit_code}`);
+        if (data.stop_requested) {
+          setRunState("done", "Stopped");
+        } else {
+          setRunState(data.exit_code === 0 ? "done" : "error", data.exit_code === 0 ? "Done" : `Failed ${data.exit_code}`);
+        }
         stopStatusPolling();
       } else {
         setRunState("", "Idle");
@@ -2186,10 +2364,11 @@
       refreshFileLogs();
     }
 
-    async function runVap() {
-      const config = buildConfig();
-      logOutput.textContent = "";
+    async function runVap(config = buildConfig()) {
+      currentRunDir = null;
+      updateLogContent(logOutput, "", { forceScroll: true });
       setTensorBoardReady(false);
+      setProfileActionsReady(false);
       setRunState("running", "Starting");
       const response = await fetch("/api/run", {
         method: "POST",
@@ -2217,17 +2396,73 @@
     function openTensorBoard() {
       if (btnTensorBoard.disabled) return;
       const protocol = location.protocol === "https:" ? "https:" : "http:";
-      const url = `${protocol}//${location.hostname}:6006/`;
+      const port = buildConfig().profiler_cfg?.tensorboard_port || 6006;
+      const url = `${protocol}//${location.hostname}:${port}/`;
       window.open(url, "_blank", "noopener,noreferrer");
       showToast("TensorBoard opened");
     }
 
+    function openPerfetto() {
+      window.open("https://ui.perfetto.dev/", "_blank", "noopener,noreferrer");
+      showToast("Perfetto opened. Trace Processor port: 9001");
+    }
+
+    function getDownloadFileName(response, fallbackName) {
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+      if (utf8Match) return decodeURIComponent(utf8Match[1]);
+      const quotedMatch = disposition.match(/filename="([^"]+)"/i);
+      if (quotedMatch) return quotedMatch[1];
+      const plainMatch = disposition.match(/filename=([^;]+)/i);
+      return plainMatch ? plainMatch[1].trim() : fallbackName;
+    }
+
+    async function downloadProfileArchive() {
+      const query = currentRunDir ? `?run_dir=${encodeURIComponent(currentRunDir)}` : "";
+      const response = await fetch(`/api/profile/archive${query}`);
+      if (!response.ok) {
+        const data = await readJsonResponse(response, "Failed to download profile");
+        throw new Error(data.message || "Failed to download profile");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = getDownloadFileName(response, "vllm-profile.zip");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast("Trace archive download started");
+    }
+
     document.querySelectorAll("[data-add-kv]").forEach((button) => {
-      button.addEventListener("click", () => addKvRow(button.dataset.addKv));
+      button.addEventListener("click", () => {
+        addKvRow(button.dataset.addKv);
+        scheduleConfigDraftSave();
+      });
     });
-    document.getElementById("add-device").addEventListener("click", () => addDevice());
-    document.getElementById("add-mount").addEventListener("click", () => addMount());
-    document.getElementById("add-env").addEventListener("click", () => addEnv());
+    document.getElementById("add-device").addEventListener("click", () => {
+      addDevice();
+      scheduleConfigDraftSave();
+    });
+    document.getElementById("add-mount").addEventListener("click", () => {
+      addMount();
+      scheduleConfigDraftSave();
+    });
+    document.getElementById("add-env").addEventListener("click", () => {
+      addEnv();
+      scheduleConfigDraftSave();
+    });
+    document.querySelector(".form").addEventListener("input", scheduleConfigDraftSave);
+    document.querySelector(".form").addEventListener("change", scheduleConfigDraftSave);
+    document.querySelectorAll(".kv-list, .list-editor").forEach((container) => {
+      container.addEventListener("click", (event) => {
+        if (event.target.closest("button")) {
+          setTimeout(scheduleConfigDraftSave, 0);
+        }
+      });
+    });
     document.querySelectorAll(".config-panel > h2").forEach((heading) => {
       heading.addEventListener("click", () => openConfigPanel(heading.closest(".config-panel")));
     });
@@ -2253,11 +2488,13 @@
       });
     });
     btnTheme.addEventListener("click", toggleTheme);
-    document.getElementById("btn-reload").addEventListener("click", () => loadConfig().catch((error) => showToast(error.message, "error")));
+    document.getElementById("btn-reload").addEventListener("click", () => reloadConfigFromFile().catch((error) => showToast(error.message, "error")));
     document.getElementById("btn-save").addEventListener("click", () => saveConfig().catch((error) => showToast(error.message, "error")));
     document.getElementById("btn-validate").addEventListener("click", () => validateConfig().catch((error) => showToast(error.message, "error")));
-    document.getElementById("btn-run").addEventListener("click", () => runVap().catch((error) => showToast(error.message, "error")));
+    document.getElementById("btn-run").addEventListener("click", () => validateConfig({ allowRunAction: true }).catch((error) => showToast(error.message, "error")));
     btnTensorBoard.addEventListener("click", openTensorBoard);
+    btnPerfetto.addEventListener("click", openPerfetto);
+    btnProfileDownload.addEventListener("click", () => downloadProfileArchive().catch((error) => showToast(error.message, "error")));
     document.getElementById("btn-stop").addEventListener("click", () => stopVap().catch((error) => showToast(error.message, "error")));
     document.getElementById("validation-close").addEventListener("click", () => validationModal.classList.remove("show"));
     document.getElementById("validation-ok").addEventListener("click", () => validationModal.classList.remove("show"));
@@ -2267,11 +2504,13 @@
 
     applyTheme(getCurrentTheme());
     initLayoutSplitter();
-    loadConfig().catch((error) => {
-      showToast("Failed to load config: " + error.message, "error");
-      fillForm({});
-    });
-    pollStatus();
+    if (!loadConfigDraft()) {
+      loadConfig().catch((error) => {
+        showToast("Failed to load config: " + error.message, "error");
+        fillForm({});
+      });
+    }
+    pollStatus().catch((error) => showToast(error.message, "error"));
   </script>
 </body>
 </html>

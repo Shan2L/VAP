@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import io
 import json
 import os
 import re
@@ -11,6 +13,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,15 +22,17 @@ from urllib.parse import parse_qs, urlparse
 
 from config import VAPConfig
 
-
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "public"
 DEFAULT_CONFIG_PATH = APP_DIR / "example-config.json"
 WORK_DIR = Path.cwd().resolve()
 CONFIG_PATH = WORK_DIR / "config.json"
 LOGS_DIR = WORK_DIR / "logs"
+TEMP_CONFIG_DIR = WORK_DIR / "tmp" / "configs"
 SHELL_UNSAFE_PATTERN = re.compile(r"[\n\r;&|`$<>]")
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+DEFAULT_VISIBLE_DEVICE_COUNT = 8
+PERFETTO_PORT = 9001
 RUN_LOCK = threading.Lock()
 RUN_STATE: dict[str, Any] = {
     "process": None,
@@ -39,7 +44,10 @@ RUN_STATE: dict[str, Any] = {
     "run_dir": None,
     "config_path": None,
     "output": "",
+    "stop_requested": False,
 }
+SHUTDOWN_CLEANUP_LOCK = threading.Lock()
+SHUTDOWN_CLEANUP_DONE = False
 
 
 def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -73,9 +81,13 @@ def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
     bench_port = config.vllm_bench_cfg.get("--port")
 
     if deploy_host is None:
-        errors.append({"path": "vllm_deploy_cfg.--host", "message": "Missing vLLM deploy host"})
+        errors.append(
+            {"path": "vllm_deploy_cfg.--host", "message": "Missing vLLM deploy host"}
+        )
     if bench_host is None:
-        errors.append({"path": "vllm_bench_cfg.--host", "message": "Missing vLLM benchmark host"})
+        errors.append(
+            {"path": "vllm_bench_cfg.--host", "message": "Missing vLLM benchmark host"}
+        )
     if deploy_host is not None and bench_host is not None and deploy_host != bench_host:
         errors.append(
             {
@@ -85,9 +97,13 @@ def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
         )
 
     if deploy_port is None:
-        errors.append({"path": "vllm_deploy_cfg.--port", "message": "Missing vLLM deploy port"})
+        errors.append(
+            {"path": "vllm_deploy_cfg.--port", "message": "Missing vLLM deploy port"}
+        )
     if bench_port is None:
-        errors.append({"path": "vllm_bench_cfg.--port", "message": "Missing vLLM benchmark port"})
+        errors.append(
+            {"path": "vllm_bench_cfg.--port", "message": "Missing vLLM benchmark port"}
+        )
     if deploy_port is not None and bench_port is not None and deploy_port != bench_port:
         errors.append(
             {
@@ -113,8 +129,111 @@ def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
                 }
             )
 
+    if not is_valid_port(config.profiler_cfg.tensorboard_port):
+        errors.append(
+            {
+                "path": "profiler_cfg.tensorboard_port",
+                "message": "TensorBoard port must be an integer from 1 to 65535",
+            }
+        )
+
+    local_vllm_port = (
+        deploy_port
+        if is_valid_port(deploy_port) and deploy_port == bench_port
+        else None
+    )
+    errors.extend(validate_local_service_port_conflicts(config, local_vllm_port))
+    errors.extend(validate_tensor_parallel_devices(config))
     errors.extend(validate_risky_config(config))
     return errors
+
+
+def validate_local_service_port_conflicts(
+    config: VAPConfig,
+    local_vllm_port: int | None,
+) -> list[dict[str, str]]:
+    ports = [
+        (
+            "profiler_cfg.tensorboard_port",
+            "TensorBoard port",
+            config.profiler_cfg.tensorboard_port,
+        ),
+        ("perfetto.port", "Perfetto Trace Processor port", PERFETTO_PORT),
+    ]
+    if local_vllm_port is not None:
+        ports.insert(
+            0, ("vllm_deploy_cfg.--port", "vLLM service port", local_vllm_port)
+        )
+    if config.distributed_cfg is not None:
+        ports.append(
+            (
+                "distributed_cfg.ray_port",
+                "Ray distributed port",
+                config.distributed_cfg.ray_port,
+            )
+        )
+
+    errors: list[dict[str, str]] = []
+    seen: dict[int, tuple[str, str]] = {}
+    for path, name, port in ports:
+        if not is_valid_port(port):
+            continue
+        if port in seen:
+            previous_path, previous_name = seen[port]
+            errors.append(
+                {
+                    "path": path,
+                    "message": f"{name} conflicts with {previous_name}; both use local port {port}",
+                }
+            )
+            errors.append(
+                {
+                    "path": previous_path,
+                    "message": f"{previous_name} conflicts with {name}; both use local port {port}",
+                }
+            )
+        else:
+            seen[port] = (path, name)
+    return errors
+
+
+def validate_tensor_parallel_devices(config: VAPConfig) -> list[dict[str, str]]:
+    tp_value = config.vllm_deploy_cfg.get("-tp")
+    if tp_value is None:
+        return []
+
+    try:
+        tensor_parallel_size = int(tp_value)
+    except (TypeError, ValueError):
+        return [
+            {
+                "path": "vllm_deploy_cfg.-tp",
+                "message": "-tp must be a positive integer",
+            }
+        ]
+
+    if tensor_parallel_size < 1:
+        return [
+            {
+                "path": "vllm_deploy_cfg.-tp",
+                "message": "-tp must be a positive integer",
+            }
+        ]
+
+    devices = config.container_cfg.devices or []
+    visible_device_count = len(devices) if devices else DEFAULT_VISIBLE_DEVICE_COUNT
+    if tensor_parallel_size > visible_device_count:
+        return [
+            {
+                "path": "vllm_deploy_cfg.-tp",
+                "message": (
+                    f"-tp={tensor_parallel_size} exceeds visible GPU device count "
+                    f"{visible_device_count}. Empty devices means all "
+                    f"{DEFAULT_VISIBLE_DEVICE_COUNT} GPUs are visible."
+                ),
+            }
+        ]
+    return []
 
 
 def validate_risky_config(config: VAPConfig) -> list[dict[str, str]]:
@@ -280,7 +399,8 @@ def build_config_summary(config: VAPConfig) -> dict[str, Any]:
 
 def save_temp_config(payload: dict[str, Any]) -> Path:
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    temp_path = WORK_DIR / f"vap-config-{timestamp}-{uuid.uuid4().hex[:8]}.json"
+    TEMP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = TEMP_CONFIG_DIR / f"vap-config-{timestamp}-{uuid.uuid4().hex[:8]}.json"
     with temp_path.open("w", encoding="utf-8") as config_file:
         json.dump(payload, config_file, indent=4, ensure_ascii=False)
         config_file.write("\n")
@@ -321,7 +441,17 @@ def check_config_ports(payload: dict[str, Any]) -> dict[str, Any]:
             "name": "vLLM service port",
             "port": config.vllm_port,
             "available": is_local_port_available(config.vllm_port),
-        }
+        },
+        {
+            "name": "TensorBoard port",
+            "port": config.profiler_cfg.tensorboard_port,
+            "available": is_local_port_available(config.profiler_cfg.tensorboard_port),
+        },
+        {
+            "name": "Perfetto Trace Processor port",
+            "port": PERFETTO_PORT,
+            "available": is_local_port_available(PERFETTO_PORT),
+        },
     ]
     if config.distributed_cfg is not None:
         ray_port = config.distributed_cfg.ray_port
@@ -585,7 +715,11 @@ def check_machine(node: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
         "reachable": reachable,
         "ip": resolved_ip,
         "checks": port_results,
-        "message": "Machine is reachable" if reachable else "Machine DNS resolved, but none of the checked ports are reachable",
+        "message": (
+            "Machine is reachable"
+            if reachable
+            else "Machine DNS resolved, but none of the checked ports are reachable"
+        ),
     }
 
 
@@ -609,8 +743,11 @@ def get_run_state_snapshot() -> dict[str, Any]:
             "started_at": RUN_STATE["started_at"],
             "ended_at": RUN_STATE["ended_at"],
             "run_dir": str(run_dir) if run_dir else None,
-            "config_path": str(RUN_STATE["config_path"]) if RUN_STATE["config_path"] else None,
+            "config_path": (
+                str(RUN_STATE["config_path"]) if RUN_STATE["config_path"] else None
+            ),
             "output": RUN_STATE["output"],
+            "stop_requested": RUN_STATE["stop_requested"],
             "has_process": process is not None,
         }
 
@@ -652,6 +789,41 @@ def read_current_log_file(file_name: str) -> dict[str, Any]:
     }
 
 
+def resolve_profile_archive_run_dir(raw_run_dir: str | None = None) -> Path:
+    if raw_run_dir:
+        run_dir = Path(raw_run_dir).resolve()
+        if not run_dir.is_dir() or not run_dir.is_relative_to(LOGS_DIR.resolve()):
+            raise ValueError("Invalid run directory for profile archive")
+        return run_dir
+
+    snapshot = get_run_state_snapshot()
+    run_dir = Path(snapshot["run_dir"]).resolve() if snapshot["run_dir"] else None
+    if run_dir is None:
+        raise ValueError("There is no active or completed run directory yet")
+    if not run_dir.is_dir() or not run_dir.is_relative_to(LOGS_DIR.resolve()):
+        raise ValueError("Invalid current run directory for profile archive")
+    return run_dir
+
+
+def build_current_profile_archive(raw_run_dir: str | None = None) -> tuple[str, bytes]:
+    run_dir = resolve_profile_archive_run_dir(raw_run_dir)
+    profile_dir = (run_dir / "vllm-profile").resolve()
+    if not profile_dir.is_dir() or not profile_dir.is_relative_to(LOGS_DIR.resolve()):
+        raise ValueError("This run has not generated a vllm-profile directory yet")
+
+    files = [path for path in profile_dir.rglob("*") if path.is_file()]
+    if not files:
+        raise ValueError("The vllm-profile directory is empty")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in files:
+            archive.write(path, path.relative_to(run_dir))
+
+    archive_name = f"{run_dir.name}-vllm-profile.zip"
+    return archive_name, buffer.getvalue()
+
+
 def discover_run_dir(existing_dirs: set[str], started_at: float) -> Path | None:
     if not LOGS_DIR.is_dir():
         return None
@@ -669,7 +841,9 @@ def discover_run_dir(existing_dirs: set[str], started_at: float) -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
 
 
-def monitor_run_process(process: subprocess.Popen[str], existing_dirs: set[str], started_at: float) -> None:
+def monitor_run_process(
+    process: subprocess.Popen[str], existing_dirs: set[str], started_at: float
+) -> None:
     while True:
         with RUN_LOCK:
             if RUN_STATE["process"] is process and RUN_STATE["run_dir"] is None:
@@ -713,7 +887,9 @@ def current_run_is_tensorboard_phase() -> bool:
     return tensorboard_marker in log_path.read_text(encoding="utf-8", errors="replace")
 
 
-def stop_process_group_sync(process: subprocess.Popen[str], timeout_sec: float = 5.0) -> bool:
+def stop_process_group_sync(
+    process: subprocess.Popen[str], timeout_sec: float = 5.0
+) -> bool:
     terminate_run_process(process)
     try:
         process.wait(timeout=timeout_sec)
@@ -737,14 +913,20 @@ def stop_process_group_sync(process: subprocess.Popen[str], timeout_sec: float =
 def start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
     with RUN_LOCK:
         process = RUN_STATE["process"]
-        is_running = RUN_STATE["running"] and process is not None and process.poll() is None
+        is_running = (
+            RUN_STATE["running"] and process is not None and process.poll() is None
+        )
     if is_running:
         if not current_run_is_tensorboard_phase():
             raise RuntimeError("VAP is already running")
         with RUN_LOCK:
-            RUN_STATE["output"] += "\n--- Previous TensorBoard is still running; stopping it before new run ---\n"
+            RUN_STATE[
+                "output"
+            ] += "\n--- Previous TensorBoard is still running; stopping it before new run ---\n"
         if not stop_process_group_sync(process):
-            raise RuntimeError("The previous TensorBoard process did not stop in time. Try again later.")
+            raise RuntimeError(
+                "The previous TensorBoard process did not stop in time. Try again later."
+            )
 
     run_config_path = (config_path or CONFIG_PATH).resolve()
     LOGS_DIR.mkdir(exist_ok=True)
@@ -771,6 +953,7 @@ def start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
                 "run_dir": None,
                 "config_path": run_config_path,
                 "output": f"--- VAP started (pid {process.pid}) ---\n",
+                "stop_requested": False,
             }
         )
     thread = threading.Thread(
@@ -791,7 +974,9 @@ def terminate_run_process(process: subprocess.Popen[str]) -> None:
         process.terminate()
 
 
-def force_kill_process_group_later(process: subprocess.Popen[str], timeout_sec: float = 5.0) -> None:
+def force_kill_process_group_later(
+    process: subprocess.Popen[str], timeout_sec: float = 5.0
+) -> None:
     def worker() -> None:
         try:
             process.wait(timeout=timeout_sec)
@@ -809,6 +994,32 @@ def force_kill_process_group_later(process: subprocess.Popen[str], timeout_sec: 
     threading.Thread(target=worker, daemon=True).start()
 
 
+def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
+    global SHUTDOWN_CLEANUP_DONE
+    with SHUTDOWN_CLEANUP_LOCK:
+        if SHUTDOWN_CLEANUP_DONE:
+            return
+        SHUTDOWN_CLEANUP_DONE = True
+
+    with RUN_LOCK:
+        process = RUN_STATE["process"]
+        is_running = (
+            RUN_STATE["running"] and process is not None and process.poll() is None
+        )
+        if is_running:
+            RUN_STATE["stop_requested"] = True
+            RUN_STATE[
+                "output"
+            ] += "\n--- Server is exiting; stopping active VAP run ---\n"
+
+    if not is_running or process is None:
+        return
+
+    print("Stopping active VAP run before server exits...")
+    if not stop_process_group_sync(process, timeout_sec=timeout_sec):
+        print("Active VAP run did not stop cleanly before server exit.")
+
+
 def stop_vap_run() -> dict[str, Any]:
     with RUN_LOCK:
         process = RUN_STATE["process"]
@@ -817,8 +1028,12 @@ def stop_vap_run() -> dict[str, Any]:
     terminate_run_process(process)
     force_kill_process_group_later(process)
     with RUN_LOCK:
+        RUN_STATE["stop_requested"] = True
         RUN_STATE["output"] += "\n--- Stop requested from UI ---\n"
-    return {"message": "Stop signal sent. main.py and its child processes will be stopped.", **get_run_state_snapshot()}
+    return {
+        "message": "Stop signal sent. main.py and its child processes will be stopped.",
+        **get_run_state_snapshot(),
+    }
 
 
 class VAPConfigHandler(BaseHTTPRequestHandler):
@@ -837,6 +1052,9 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/run/status":
             self.handle_run_status()
+            return
+        if parsed.path == "/api/profile/archive":
+            self.handle_profile_archive(parsed.query)
             return
         if parsed.path.startswith("/public/"):
             self.serve_static(parsed.path.removeprefix("/public/"))
@@ -945,6 +1163,20 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def handle_profile_archive(self, query: str) -> None:
+        try:
+            params = parse_qs(query)
+            run_dir = params.get("run_dir", [None])[0]
+            file_name, content = build_current_profile_archive(run_dir)
+        except ValueError as exc:
+            self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_binary(
+            content,
+            "application/zip",
+            f'attachment; filename="{file_name}"',
+        )
+
     def handle_validate(self) -> None:
         payload = self.read_json_body()
         self.send_json(validate_config_payload(payload))
@@ -1035,20 +1267,50 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def send_binary(
+        self,
+        content: bytes,
+        content_type: str,
+        content_disposition: str | None = None,
+        status: HTTPStatus = HTTPStatus.OK,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        if content_disposition:
+            self.send_header("Content-Disposition", content_disposition)
+        self.end_headers()
+        self.wfile.write(content)
+
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[VAP Config UI] {self.address_string()} - {fmt % args}")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="VAP config management UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8899)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    atexit.register(cleanup_active_run_on_server_exit)
+
+    def handle_shutdown_signal(signum: int, frame: Any) -> None:
+        print(f"Received signal {signum}; shutting down VAP config UI...")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
     server = ThreadingHTTPServer((args.host, args.port), VAPConfigHandler)
     print(f"VAP config UI started: http://{args.host}:{args.port}")
-    print(f"Temporary config files will be saved to: {WORK_DIR}")
-    server.serve_forever()
+    print(f"Temporary config files will be saved to: {TEMP_CONFIG_DIR}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("VAP config UI is stopping...")
+    finally:
+        cleanup_active_run_on_server_exit()
+        server.server_close()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,12 @@
 logs
+tmp
 .venv
+.uv-bin
+.perfetto-home
+trace_processor
+bin
 __pycache__
+
+.perfetto-cache
+*egg-info
 

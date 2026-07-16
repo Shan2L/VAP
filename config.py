@@ -25,6 +25,7 @@ class ProfilerConfig(BaseModel):
     torch_profiler_use_gzip: bool
     delay_iterations: int = 0
     max_iterations: int = 0
+    tensorboard_port: int = 6006
 
 
 class MountConfig(BaseModel):
@@ -73,7 +74,7 @@ class VAPConfig(BaseModel):
 
     def build_profiler_cli_args_dict(self) -> dict[str, object]:
         args: dict[str, object] = {}
-        for k, v in self.profiler_cfg.model_dump().items():
+        for k, v in self.profiler_cfg.model_dump(exclude={"tensorboard_port"}).items():
             if isinstance(v, bool):
                 v = str(v).lower()
             args[f"--profiler-config.{k}"] = v

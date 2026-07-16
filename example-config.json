@@ -1,7 +1,7 @@
 {
     "model_cfg": {
         "model_name": "Qwen/Qwen3-0.6B",
-        "model_path": "/home/home/nfs_share/huggingface/"
+        "model_path": "/home/nfs_share/huggingface/"
     },
 
 
@@ -55,7 +55,6 @@
         "-tp": 2
    },
 
-
    "profiler_cfg": {
         "profiler": "torch",
         "torch_profiler_dir": "/app/VAP/log/vllm-profile",
@@ -65,7 +64,8 @@
         "torch_profiler_with_flops": false,
         "torch_profiler_use_gzip": true,
         "delay_iterations": 0,
-        "max_iterations": 10
+        "max_iterations": 10,
+        "tensorboard_port": 6006
     },
 
 

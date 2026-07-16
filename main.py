@@ -1,4 +1,5 @@
 from datetime import datetime
+import glob
 import json
 import os
 import logging
@@ -10,12 +11,13 @@ import signal
 import shutil
 import subprocess
 
-from config import VAPConfig, ProfilerConfig
+from config import VAPConfig
 
 import docker
 from docker.types import Mount, Ulimit
 
 logger = logging.getLogger("VAP")
+PERFETTO_PORT = 9001
 
 
 def build_container_mounts(config: VAPConfig, log_path: str) -> list[Mount]:
@@ -223,12 +225,17 @@ def bench_and_profile(
     start_profile_url = f"http://{config.vllm_host}:{config.vllm_port}/start_profile"
     stop_profile_url = f"http://{config.vllm_host}:{config.vllm_port}/stop_profile"
 
-    requests.post(start_profile_url)
-    exit_code, output = container.exec_run(
-        ["/bin/bash", "-c", bench_cmd_str],
-        demux=True,
-    )
-    requests.post(stop_profile_url)
+    requests.post(start_profile_url, timeout=10)
+    try:
+        exit_code, output = container.exec_run(
+            ["/bin/bash", "-c", bench_cmd_str],
+            demux=True,
+        )
+    finally:
+        try:
+            requests.post(stop_profile_url, timeout=10)
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Failed to stop vLLM profiler cleanly: %s", exc)
     stdout, stderr = output
     if exit_code != 0:
         msg = (stderr or stdout or b"").decode(errors="replace")
@@ -248,32 +255,140 @@ def terminate_process(process: subprocess.Popen | None, timeout_sec: float = 5.0
         process.wait()
 
 
+def collect_pytorch_trace_files(profile_dir: str) -> list[str]:
+    patterns = ("*.pt.trace.json.gz", "*.trace.json.gz", "*.trace.json")
+    traces: list[str] = []
+    for pattern in patterns:
+        traces.extend(glob.glob(os.path.join(profile_dir, pattern)))
+    traces = [
+        trace
+        for trace in traces
+        if not os.path.basename(trace).startswith("merged_trace")
+    ]
+    return sorted(dict.fromkeys(traces))
+
+
+def merge_pytorch_traces_for_perfetto(profile_dir: str) -> str | None:
+    trace_files = collect_pytorch_trace_files(profile_dir)
+    if not trace_files:
+        return None
+    if len(trace_files) == 1:
+        logger.info(
+            "Only one PyTorch trace found; Perfetto will load %s", trace_files[0]
+        )
+        return trace_files[0]
+
+    output_file = os.path.join(profile_dir, "merged_trace.json")
+    try:
+        from TraceLens import TraceFuse
+
+        logger.info("Merging %d PyTorch traces with TraceLens", len(trace_files))
+        merged_trace = TraceFuse(trace_files).merge_and_save(output_file)
+        logger.info("Merged Perfetto trace has been saved to: %s", merged_trace)
+        return merged_trace
+    except Exception as exc:
+        logger.warning("TraceLens trace merge failed: %s", exc)
+        logger.warning("Perfetto will fall back to the first trace: %s", trace_files[0])
+        return trace_files[0]
+
+
+def find_perfetto_trace(profile_dir: str) -> str | None:
+    merged_or_single_trace = merge_pytorch_traces_for_perfetto(profile_dir)
+    if merged_or_single_trace:
+        return merged_or_single_trace
+
+    pftrace_files = sorted(glob.glob(os.path.join(profile_dir, "*.pftrace")))
+    if pftrace_files:
+        return pftrace_files[0]
+    return None
+
+
 def visualize_profile(config: VAPConfig, log_dir: str):
-    venv_python = os.path.join(os.path.dirname(__file__), ".venv", "bin", "python")
+    app_dir = os.path.dirname(__file__)
+    profile_dir = os.path.join(log_dir, "vllm-profile")
+    venv_python = os.path.join(app_dir, ".venv", "bin", "python")
     tensorboard_cmd = [
         venv_python,
         "-m",
         "tensorboard.main",
         "--logdir",
-        os.path.join(log_dir, "vllm-profile"),
+        profile_dir,
+        "--port",
+        str(config.profiler_cfg.tensorboard_port),
     ]
+
+    tensorboard_process = None
+    perfetto_process = None
     try:
         tensorboard_process = subprocess.Popen(tensorboard_cmd)
     except FileNotFoundError:
-        logger.warning("%s is not available; skip TensorBoard visualization", venv_python)
+        logger.warning(
+            "%s is not available; skip TensorBoard visualization", venv_python
+        )
+    else:
+        logger.info(
+            "TensorBoard started with pid %s on port %s",
+            tensorboard_process.pid,
+            config.profiler_cfg.tensorboard_port,
+        )
+
+    trace_path = find_perfetto_trace(profile_dir)
+    trace_processor = os.path.join(app_dir, "bin", "trace_processor")
+    if trace_path is None:
+        logger.warning("No Perfetto-compatible trace found under %s", profile_dir)
+    elif not os.path.exists(trace_processor):
+        logger.warning(
+            "%s is not available; skip Perfetto visualization", trace_processor
+        )
+    else:
+        perfetto_home = os.path.join(app_dir, "bin", "perfetto-home")
+        os.makedirs(perfetto_home, exist_ok=True)
+        perfetto_env = os.environ.copy()
+        perfetto_env["HOME"] = perfetto_home
+        perfetto_cmd = [
+            trace_processor,
+            "--httpd",
+            "--http-port",
+            str(PERFETTO_PORT),
+            trace_path,
+        ]
+        try:
+            perfetto_process = subprocess.Popen(perfetto_cmd, env=perfetto_env)
+        except FileNotFoundError:
+            logger.warning(
+                "%s is not available; skip Perfetto visualization", trace_processor
+            )
+        else:
+            logger.info(
+                "Perfetto Trace Processor started with pid %s on port %s for %s",
+                perfetto_process.pid,
+                PERFETTO_PORT,
+                trace_path,
+            )
+
+    processes = [
+        process for process in (tensorboard_process, perfetto_process) if process
+    ]
+    if not processes:
         return
-    logger.info("TensorBoard started with pid %s", tensorboard_process.pid)
+
     try:
-        tensorboard_process.wait()
+        while any(process.poll() is None for process in processes):
+            time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("Stopping TensorBoard...")
+        logger.info("Stopping visualization services...")
         raise
     finally:
-        terminate_process(tensorboard_process)
+        for process in processes:
+            terminate_process(process)
 
 
 def clean(log_dir: str):
-    shutil.rmtree(log_dir)
+    if os.path.isdir(log_dir):
+        shutil.rmtree(log_dir)
+        print(f"Removed {log_dir}")
+    else:
+        print(f"{log_dir} does not exist; nothing to clean")
 
 
 def register_signal_handler(container: docker.models.containers.Container):
@@ -283,6 +398,7 @@ def register_signal_handler(container: docker.models.containers.Container):
             container.stop()
             container.remove()
         exit(0)
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -291,6 +407,8 @@ def run(args, log_dir: str):
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(log_dir, date_str)
     os.makedirs(log_path, exist_ok=True)
+    shutil.copy2(args.config, os.path.join(log_path, "config.json"))
+    container = None
 
     logger = setup_logging(
         log_path, debug=True if os.getenv("VAP_DEBUG") == "1" else False
@@ -299,7 +417,7 @@ def run(args, log_dir: str):
     config = load_config(args.config)
 
     logger.info("VAP started")
-    
+
     # 1. resource validation
     # 1.1. machine connection
     if config.distributed_cfg is not None:
@@ -343,15 +461,11 @@ def run(args, log_dir: str):
             config, log_path, docker_client, config.docker_image, date_str
         )
         register_signal_handler(container)
-
         vllm_port = config.vllm_port
         wait_for_vllm_ready(vllm_port)
 
         # 3. benchmark and profile
-
         bench_and_profile(config, container)
-
-
 
     except Exception as e:
         logger.error(f"Error: {e}")
@@ -361,7 +475,6 @@ def run(args, log_dir: str):
             container.stop()
             container.remove()
 
-
     # 4. print profile result path
     logger.info(
         f"Profile archive has been saved to: {os.path.join(log_path, 'vllm-profile')}"
@@ -370,16 +483,13 @@ def run(args, log_dir: str):
     visualize_profile(config, log_path)
 
 
-
-
-if __name__ == "__main__":
-
+def main(argv: list[str] | None = None) -> None:
     argparser = argparse.ArgumentParser()
     subparsers = argparser.add_subparsers(dest="command")
     run_parser = subparsers.add_parser("run", help="Run VAP")
-    clean_parser = subparsers.add_parser("clean", help="Clean VAP")
+    subparsers.add_parser("clean", help="Clean VAP")
     run_parser.add_argument("--config", type=str, default="example-config.json")
-    args = argparser.parse_args()
+    args = argparser.parse_args(argv)
 
     cwd = os.getcwd()
     log_dir = os.path.join(cwd, "logs")
@@ -393,3 +503,5 @@ if __name__ == "__main__":
         exit(1)
 
 
+if __name__ == "__main__":
+    main()

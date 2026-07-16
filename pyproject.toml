@@ -8,4 +8,11 @@ dependencies = [
     "pydantic>=2.13.4",
     "requests>=2.34.2",
     "torch-tb-profiler>=0.4.3",
+    "TraceLens @ git+https://github.com/AMD-AGI/TraceLens.git@2eae9b056b3db46656bda030499ec6d4e1310ea4",
 ]
+
+[tool.setuptools]
+py-modules = ["cli", "config", "main", "server"]
+
+[project.scripts]
+vap = "cli:main"
