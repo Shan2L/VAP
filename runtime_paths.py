@@ -8,6 +8,7 @@ VAP_HOME = Path(os.getenv("VAP_HOME", "~/.vap")).expanduser().resolve()
 VAP_BIN_DIR = VAP_HOME / "bin"
 VAP_LOGS_DIR = VAP_HOME / "logs"
 VAP_TMP_DIR = VAP_HOME / "tmp"
+VAP_VENV_DIR = VAP_HOME / "venv"
 VAP_TEMP_CONFIG_DIR = VAP_TMP_DIR / "configs"
 VAP_CONFIG_PATH = VAP_HOME / "config.json"
 VAP_PERFETTO_HOME = VAP_HOME / "perfetto-home"

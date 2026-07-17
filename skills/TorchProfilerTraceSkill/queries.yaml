@@ -115,7 +115,10 @@ memory_copies: |
 
 rank_activity: |
   SELECT
-    EXTRACT_ARG(arg_set_id, 'rank') AS rank,
+    COALESCE(
+      EXTRACT_ARG(arg_set_id, 'args.rank'),
+      EXTRACT_ARG(arg_set_id, 'rank')
+    ) AS rank,
     COUNT(*) AS event_count,
     SUM(dur) / 1000000.0 AS total_dur_ms,
     MAX(dur) / 1000000.0 AS max_dur_ms
@@ -127,7 +130,10 @@ rank_activity: |
 
 rank_longest_slices: |
   SELECT
-    EXTRACT_ARG(arg_set_id, 'rank') AS rank,
+    COALESCE(
+      EXTRACT_ARG(arg_set_id, 'args.rank'),
+      EXTRACT_ARG(arg_set_id, 'rank')
+    ) AS rank,
     name,
     dur / 1000000.0 AS dur_ms,
     ts / 1000000.0 AS ts_ms

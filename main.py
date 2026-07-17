@@ -17,6 +17,7 @@ from runtime_paths import (
     VAP_BIN_DIR,
     VAP_LOGS_DIR,
     VAP_PERFETTO_HOME,
+    VAP_VENV_DIR,
     ensure_vap_home,
 )
 
@@ -349,34 +350,74 @@ def find_trace_processor(app_dir: str) -> str | None:
     return None
 
 
-def visualize_profile(config: VAPConfig, log_dir: str):
+def find_tensorboard_command(app_dir: str) -> list[str] | None:
+    env_tensorboard = os.getenv("VAP_TENSORBOARD")
+    if env_tensorboard:
+        return [env_tensorboard]
+
+    candidate_bins = [
+        VAP_VENV_DIR / "bin" / "tensorboard",
+        APP_DIR / ".venv" / "bin" / "tensorboard",
+    ]
+    for candidate in candidate_bins:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate)]
+
+    candidate_pythons = [
+        VAP_VENV_DIR / "bin" / "python",
+        APP_DIR / ".venv" / "bin" / "python",
+    ]
+    for candidate in candidate_pythons:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate), "-m", "tensorboard.main"]
+
+    path_tensorboard = shutil.which("tensorboard")
+    if path_tensorboard:
+        return [path_tensorboard]
+
+    return None
+
+
+def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
     app_dir = str(APP_DIR)
     profile_dir = os.path.join(log_dir, "vllm-profile")
-    venv_python = os.path.join(app_dir, ".venv", "bin", "python")
-    tensorboard_cmd = [
-        venv_python,
-        "-m",
-        "tensorboard.main",
-        "--logdir",
-        profile_dir,
-        "--port",
-        str(config.profiler_cfg.tensorboard_port),
-    ]
+    tensorboard_base_cmd = find_tensorboard_command(app_dir)
+    tensorboard_cmd = (
+        [
+            *tensorboard_base_cmd,
+            "--logdir",
+            profile_dir,
+            "--host",
+            visualization_host,
+            "--port",
+            str(config.profiler_cfg.tensorboard_port),
+            "--path_prefix",
+            "/tensorboard",
+        ]
+        if tensorboard_base_cmd
+        else None
+    )
 
     tensorboard_process = None
     perfetto_process = None
     try:
-        tensorboard_process = subprocess.Popen(tensorboard_cmd)
+        if tensorboard_cmd is None:
+            logger.warning(
+                "TensorBoard is not available; checked VAP_TENSORBOARD, %s, %s, and PATH",
+                VAP_VENV_DIR / "bin" / "tensorboard",
+                APP_DIR / ".venv" / "bin" / "tensorboard",
+            )
+        else:
+            tensorboard_process = subprocess.Popen(tensorboard_cmd)
     except FileNotFoundError:
-        logger.warning(
-            "%s is not available; skip TensorBoard visualization", venv_python
-        )
+        logger.warning("TensorBoard command is not available; skip visualization")
     else:
-        logger.info(
-            "TensorBoard started with pid %s on port %s",
-            tensorboard_process.pid,
-            config.profiler_cfg.tensorboard_port,
-        )
+        if tensorboard_process is not None:
+            logger.info(
+                "TensorBoard started with pid %s on port %s",
+                tensorboard_process.pid,
+                config.profiler_cfg.tensorboard_port,
+            )
 
     trace_path = find_perfetto_trace(profile_dir, config)
     trace_processor = find_trace_processor(app_dir)
@@ -392,6 +433,8 @@ def visualize_profile(config: VAPConfig, log_dir: str):
         perfetto_cmd = [
             trace_processor,
             "--httpd",
+            "--http-ip-address",
+            visualization_host,
             "--http-port",
             str(PERFETTO_PORT),
             trace_path,
@@ -529,7 +572,7 @@ def run(args, log_dir: str):
         f"Profile archive has been saved to: {os.path.join(log_path, 'vllm-profile')}"
     )
     # 5. visualization
-    visualize_profile(config, log_path)
+    visualize_profile(config, log_path, args.visualization_host)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -539,6 +582,7 @@ def main(argv: list[str] | None = None) -> None:
     run_parser = subparsers.add_parser("run", help="Run VAP")
     subparsers.add_parser("clean", help="Clean VAP")
     run_parser.add_argument("--config", type=str, default="example-config.json")
+    run_parser.add_argument("--visualization-host", default="127.0.0.1")
     args = argparser.parse_args(argv)
 
     log_dir = str(VAP_LOGS_DIR)

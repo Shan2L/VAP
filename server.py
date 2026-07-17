@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 import zipfile
+from http.client import HTTPConnection
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -45,6 +46,7 @@ SHELL_UNSAFE_PATTERN = re.compile(r"[\n\r;&|`$<>]")
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_VISIBLE_DEVICE_COUNT = 8
 PERFETTO_PORT = 9001
+SERVER_BIND_HOST = "127.0.0.1"
 SERVER_SESSION_ID = uuid.uuid4().hex
 RUN_LOCK = threading.Lock()
 RUN_STATE: dict[str, Any] = {
@@ -955,7 +957,15 @@ def start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
     existing_dirs = {path.name for path in LOGS_DIR.iterdir() if path.is_dir()}
     started_at = time.time()
     process = subprocess.Popen(
-        [sys.executable, "main.py", "run", "--config", str(run_config_path)],
+        [
+            sys.executable,
+            "main.py",
+            "run",
+            "--config",
+            str(run_config_path),
+            "--visualization-host",
+            SERVER_BIND_HOST,
+        ],
         cwd=str(APP_DIR),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -1201,6 +1211,7 @@ def inspect_latest_trace(args: dict[str, Any]) -> dict[str, Any]:
     trace_path = sorted(files, key=score)[0]
     stat = trace_path.stat()
     summary = summarize_trace_file(trace_path)
+    trace_name = trace_path.name.lower()
     return {
         "run_dir": str(run_dir),
         "profile_dir": str(profile_dir),
@@ -1212,9 +1223,7 @@ def inspect_latest_trace(args: dict[str, Any]) -> dict[str, Any]:
         ),
         "candidate_count": len(files),
         "candidates": [path.name for path in sorted(files, key=score)[:10]],
-        "looks_merged": trace_path.name.lower().startswith(
-            ("merged_trace", "merge_trace")
-        ),
+        "looks_merged": "merged_trace" in trace_name or "merge_trace" in trace_name,
         "summary": summary,
         "diagnosis": build_trace_diagnosis(summary),
     }
@@ -1579,7 +1588,7 @@ def summarize_trace_file(trace_path: Path) -> dict[str, Any]:
         category = str(event.get("cat") or "uncategorized")
         category_counts[category] += 1
         args = event.get("args") if isinstance(event.get("args"), dict) else {}
-        rank = args.get("rank", "unknown")
+        rank = args.get("rank", args.get("args.rank", "unknown"))
         rank_counts[str(rank)] += 1
 
         ts = event.get("ts")
@@ -1897,6 +1906,9 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self.serve_static("index.html")
             return
+        if parsed.path == "/tensorboard" or parsed.path.startswith("/tensorboard/"):
+            self.handle_tensorboard_proxy(parsed)
+            return
         if parsed.path == "/api/config":
             self.handle_get_config(parsed.query)
             return
@@ -1911,6 +1923,9 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/profile/archive":
             self.handle_profile_archive(parsed.query)
+            return
+        if parsed.path == "/api/profile/trace":
+            self.handle_profile_trace(parsed.query)
             return
         if parsed.path == "/api/agent/status":
             self.handle_agent_status()
@@ -1953,6 +1968,11 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             "/api/agent/cancel-action": self.handle_agent_cancel_action,
         }
         handler = routes.get(parsed.path)
+        if handler is None and (
+            parsed.path == "/tensorboard" or parsed.path.startswith("/tensorboard/")
+        ):
+            self.handle_tensorboard_proxy(parsed)
+            return
         if handler is None:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -2065,6 +2085,102 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             "application/zip",
             f'attachment; filename="{file_name}"',
         )
+
+    def handle_profile_trace(self, query: str) -> None:
+        try:
+            params = parse_qs(query)
+            run_dir = params.get("run_dir", [None])[0]
+            trace_info = inspect_latest_trace(
+                {"preferred_name": "merged_trace", "run_dir": run_dir}
+            )
+            trace_path = Path(trace_info["trace_path"]).resolve()
+            if not trace_path.is_relative_to(LOGS_DIR.resolve()):
+                raise ValueError("Trace path is outside VAP logs")
+            content = trace_path.read_bytes()
+        except ValueError as exc:
+            self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        content_type = (
+            "application/gzip"
+            if trace_path.suffix == ".gz"
+            else "application/json"
+        )
+        self.send_binary(
+            content,
+            content_type,
+            f'inline; filename="{trace_path.name}"',
+        )
+
+    def handle_tensorboard_proxy(self, parsed: Any) -> None:
+        try:
+            snapshot = get_run_state_snapshot()
+            config_path = snapshot.get("config_path") or CONFIG_PATH
+            config_path = Path(config_path)
+            config = VAPConfig.model_validate_json(
+                config_path.read_text(encoding="utf-8")
+            )
+            port = config.profiler_cfg.tensorboard_port
+            body = None
+            if self.command in {"POST", "PUT", "PATCH"}:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length) if length > 0 else None
+            path = parsed.path
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            headers = {
+                key: value
+                for key, value in self.headers.items()
+                if key.lower()
+                not in {
+                    "connection",
+                    "host",
+                    "keep-alive",
+                    "proxy-authenticate",
+                    "proxy-authorization",
+                    "te",
+                    "trailers",
+                    "transfer-encoding",
+                    "upgrade",
+                }
+            }
+            headers["Host"] = f"127.0.0.1:{port}"
+            conn = HTTPConnection("127.0.0.1", port, timeout=30)
+            conn.request(self.command, path, body=body, headers=headers)
+            response = conn.getresponse()
+            content = response.read()
+        except ConnectionRefusedError:
+            self.send_json(
+                {"message": "TensorBoard is not running yet"},
+                HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        except Exception as exc:
+            self.send_json(
+                {"message": f"TensorBoard proxy failed: {exc}"},
+                HTTPStatus.BAD_GATEWAY,
+            )
+            return
+
+        self.send_response(response.status)
+        excluded_headers = {
+            "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailers",
+            "transfer-encoding",
+            "upgrade",
+        }
+        for key, value in response.getheaders():
+            if key.lower() in excluded_headers:
+                continue
+            if key.lower() == "content-length":
+                continue
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
     def handle_validate(self) -> None:
         payload = self.read_json_body()
@@ -2230,11 +2346,13 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> None:
+    global SERVER_BIND_HOST
     ensure_vap_home()
     parser = argparse.ArgumentParser(description="VAP config management UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8899)
     args = parser.parse_args(argv)
+    SERVER_BIND_HOST = args.host
 
     atexit.register(cleanup_active_run_on_server_exit)
 

@@ -3812,16 +3812,84 @@
 
     function openTensorBoard() {
       if (btnTensorBoard.disabled) return;
-      const protocol = location.protocol === "https:" ? "https:" : "http:";
-      const port = buildConfig().profiler_cfg?.tensorboard_port || 6006;
-      const url = `${protocol}//${location.hostname}:${port}/`;
+      const url = `${location.origin}/tensorboard/`;
       window.open(url, "_blank", "noopener,noreferrer");
       showToast("TensorBoard opened");
     }
 
-    function openPerfetto() {
-      window.open("https://ui.perfetto.dev/", "_blank", "noopener,noreferrer");
-      showToast("Perfetto opened. Trace Processor port: 9001");
+    async function openPerfetto() {
+      if (btnPerfetto.disabled) return;
+      const perfettoWindow = window.open("https://ui.perfetto.dev/", "_blank");
+      if (!perfettoWindow) {
+        showToast("Popup was blocked. Allow popups for VAP and try again.", "error");
+        return;
+      }
+
+      const query = currentRunDir ? `?run_dir=${encodeURIComponent(currentRunDir)}` : "";
+      showToast("Opening trace in Perfetto...");
+      try {
+        const [response] = await Promise.all([
+          fetch(`/api/profile/trace${query}`),
+          waitForPerfettoReady(perfettoWindow),
+        ]);
+        if (!response.ok) {
+          const data = await readJsonResponse(response, "Failed to load trace");
+          throw new Error(data.message || "Failed to load trace");
+        }
+        const buffer = await response.arrayBuffer();
+        const fileName = getDownloadFileName(response, "vap-trace.json.gz");
+        perfettoWindow.postMessage(
+          {
+            perfetto: {
+              buffer,
+              title: fileName,
+              fileName,
+              url: location.href,
+            },
+          },
+          "https://ui.perfetto.dev",
+          [buffer],
+        );
+        showToast("Trace sent to Perfetto");
+      } catch (error) {
+        showToast(error.message || "Failed to open Perfetto", "error");
+      }
+    }
+
+    function waitForPerfettoReady(perfettoWindow) {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          reject(new Error("Perfetto UI did not become ready in time"));
+        }, 30000);
+        const pingInterval = window.setInterval(() => {
+          if (perfettoWindow.closed) {
+            cleanup();
+            reject(new Error("Perfetto window was closed"));
+            return;
+          }
+          perfettoWindow.postMessage("PING", "https://ui.perfetto.dev");
+        }, 250);
+
+        function cleanup() {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          window.clearInterval(pingInterval);
+          window.removeEventListener("message", onMessage);
+        }
+
+        function onMessage(event) {
+          if (event.origin !== "https://ui.perfetto.dev" || event.data !== "PONG") {
+            return;
+          }
+          cleanup();
+          resolve();
+        }
+
+        window.addEventListener("message", onMessage);
+      });
     }
 
     function getDownloadFileName(response, fallbackName) {
@@ -3910,7 +3978,7 @@
     document.getElementById("btn-validate").addEventListener("click", () => validateConfig().catch((error) => showToast(error.message, "error")));
     document.getElementById("btn-run").addEventListener("click", () => validateConfig({ allowRunAction: true }).catch((error) => showToast(error.message, "error")));
     btnTensorBoard.addEventListener("click", openTensorBoard);
-    btnPerfetto.addEventListener("click", openPerfetto);
+    btnPerfetto.addEventListener("click", () => openPerfetto());
     btnProfileDownload.addEventListener("click", () => downloadProfileArchive().catch((error) => showToast(error.message, "error")));
     document.getElementById("btn-stop").addEventListener("click", () => stopVap().catch((error) => showToast(error.message, "error")));
     document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
