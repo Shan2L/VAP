@@ -9,6 +9,7 @@ import requests
 import argparse
 import signal
 import shutil
+import shlex
 import subprocess
 
 from config import VAPConfig
@@ -20,12 +21,13 @@ from runtime_paths import (
     VAP_VENV_DIR,
     ensure_vap_home,
 )
+from trace_fusion import fuse_traces
+from validation import PERFETTO_PORT, validate_config_or_raise
 
 import docker
 from docker.types import Mount, Ulimit
 
 logger = logging.getLogger("VAP")
-PERFETTO_PORT = 9001
 
 
 def build_container_mounts(config: VAPConfig, log_path: str) -> list[Mount]:
@@ -56,11 +58,19 @@ def build_container_mounts(config: VAPConfig, log_path: str) -> list[Mount]:
 def load_config(config_path: str):
     with open(config_path, "r") as f:
         config_json = json.load(f)
-    config = VAPConfig.model_validate_json(json.dumps(config_json))
-    logger.info(f"Config loaded: {config}")
-    config.distributed_cfg = None
-    logger.warning("Distributed config is set to None manually for now.")
-
+    config = VAPConfig.model_validate(config_json)
+    warnings = validate_config_or_raise(config)
+    logger.info(
+        "Config loaded: model=%s docker_image=%s vllm=%s:%s",
+        config.model_cfg.model_name,
+        config.docker_image,
+        config.vllm_host,
+        config.vllm_port,
+    )
+    for warning in warnings:
+        logger.warning(
+            "Config security warning [%s]: %s", warning["path"], warning["message"]
+        )
     return config
 
 
@@ -100,20 +110,17 @@ def is_port_available(port: int) -> bool:
 
 
 def check_port_availability(config: VAPConfig):
-    if config.distributed_cfg is not None:
-        ray_port = config.distributed_cfg.ray_port
-        if is_port_available(ray_port):
-            logger.info(f"Port {ray_port} is available")
-        else:
-            logger.error(f"Port {ray_port} is not available")
-            raise Exception(f"Port {ray_port} is not available")
-
-    vllm_port = config.vllm_port
-    if is_port_available(vllm_port):
-        logger.info(f"Port {vllm_port} is available")
-    else:
-        logger.error(f"Port {vllm_port} is not available")
-        raise Exception(f"Port {vllm_port} is not available")
+    ports = {
+        "vLLM": config.vllm_port,
+        "TensorBoard": config.profiler_cfg.tensorboard_port,
+        "Perfetto Trace Processor": PERFETTO_PORT,
+    }
+    for name, port in ports.items():
+        if is_port_available(port):
+            logger.info("%s port %s is available", name, port)
+            continue
+        logger.error("%s port %s is not available", name, port)
+        raise RuntimeError(f"{name} port {port} is not available")
 
 
 def check_remote_assets(node: str, asset_path: str) -> bool:
@@ -171,12 +178,16 @@ def deploy_vllm_server(
     date_str: str,
 ) -> docker.models.containers.Container:
     mounts = build_container_mounts(config, log_path)
-    vllm_deploy_args = config.vllm_deploy_args_str()
 
     container_model_path = os.path.join("/tmp/vap/models", config.model_cfg.model_name)
+    vllm_serve_argv = [
+        "vllm",
+        "serve",
+        container_model_path,
+        *config.vllm_deploy_args(),
+    ]
     vllm_serve_cmd = (
-        f"vllm serve {container_model_path} {vllm_deploy_args} "
-        f"> /app/VAP/log/vllm_deploy.log 2>&1"
+        f"{shlex.join(vllm_serve_argv)} " f"> /app/VAP/log/vllm_deploy.log 2>&1"
     )
     logger.debug("VLLM deploy command: %s", vllm_serve_cmd)
 
@@ -225,25 +236,30 @@ def bench_and_profile(
         raise ValueError("container is required to run vllm bench inside docker")
 
     bench_cmd_str = (
-        f"vllm bench serve {config.vllm_bench_args_str()} "
-        f"2>&1 | tee /app/VAP/log/vllm_bench.log"
+        f"{shlex.join(['vllm', 'bench', 'serve', *config.vllm_bench_args()])} "
+        "2>&1 | tee /app/VAP/log/vllm_bench.log"
     )
     logger.debug("Benchmark and profile command: %s", bench_cmd_str)
 
     start_profile_url = f"http://{config.vllm_host}:{config.vllm_port}/start_profile"
     stop_profile_url = f"http://{config.vllm_host}:{config.vllm_port}/stop_profile"
 
-    requests.post(start_profile_url, timeout=10)
+    profile_started = False
     try:
+        start_response = requests.post(start_profile_url, timeout=10)
+        start_response.raise_for_status()
+        profile_started = True
         exit_code, output = container.exec_run(
             ["/bin/bash", "-c", bench_cmd_str],
             demux=True,
         )
     finally:
-        try:
-            requests.post(stop_profile_url, timeout=10)
-        except requests.exceptions.RequestException as exc:
-            logger.warning("Failed to stop vLLM profiler cleanly: %s", exc)
+        if profile_started:
+            try:
+                stop_response = requests.post(stop_profile_url, timeout=10)
+                stop_response.raise_for_status()
+            except requests.exceptions.RequestException as exc:
+                logger.warning("Failed to stop vLLM profiler cleanly: %s", exc)
     stdout, stderr = output
     if exit_code != 0:
         msg = (stderr or stdout or b"").decode(errors="replace")
@@ -315,14 +331,12 @@ def merge_pytorch_traces_for_perfetto(
 
     output_file = merged_trace_output_file(profile_dir, config)
     try:
-        from TraceLens import TraceFuse
-
-        logger.info("Merging %d PyTorch traces with TraceLens", len(trace_files))
-        merged_trace = TraceFuse(trace_files).merge_and_save(output_file)
+        logger.info("Merging %d PyTorch traces", len(trace_files))
+        merged_trace = fuse_traces(trace_files, output_file)
         logger.info("Merged Perfetto trace has been saved to: %s", merged_trace)
         return merged_trace
     except Exception as exc:
-        logger.warning("TraceLens trace merge failed: %s", exc)
+        logger.warning("Trace fusion failed: %s", exc)
         logger.warning("Perfetto will fall back to the first trace: %s", trace_files[0])
         return trace_files[0]
 
@@ -378,6 +392,15 @@ def find_tensorboard_command(app_dir: str) -> list[str] | None:
     return None
 
 
+def warn_if_process_exited(
+    process: subprocess.Popen, name: str, delay_sec: float = 0.8
+):
+    time.sleep(delay_sec)
+    exit_code = process.poll()
+    if exit_code is not None:
+        logger.warning("%s exited immediately with code %s", name, exit_code)
+
+
 def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
     app_dir = str(APP_DIR)
     profile_dir = os.path.join(log_dir, "vllm-profile")
@@ -408,6 +431,10 @@ def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
                 APP_DIR / ".venv" / "bin" / "tensorboard",
             )
         else:
+            if not is_port_available(config.profiler_cfg.tensorboard_port):
+                raise RuntimeError(
+                    f"TensorBoard port {config.profiler_cfg.tensorboard_port} is not available"
+                )
             tensorboard_process = subprocess.Popen(tensorboard_cmd)
     except FileNotFoundError:
         logger.warning("TensorBoard command is not available; skip visualization")
@@ -418,6 +445,7 @@ def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
                 tensorboard_process.pid,
                 config.profiler_cfg.tensorboard_port,
             )
+            warn_if_process_exited(tensorboard_process, "TensorBoard")
 
     trace_path = find_perfetto_trace(profile_dir, config)
     trace_processor = find_trace_processor(app_dir)
@@ -440,6 +468,10 @@ def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
             trace_path,
         ]
         try:
+            if not is_port_available(PERFETTO_PORT):
+                raise RuntimeError(
+                    f"Perfetto Trace Processor port {PERFETTO_PORT} is not available"
+                )
             perfetto_process = subprocess.Popen(perfetto_cmd, env=perfetto_env)
         except FileNotFoundError:
             logger.warning(
@@ -452,6 +484,7 @@ def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
                 PERFETTO_PORT,
                 trace_path,
             )
+            warn_if_process_exited(perfetto_process, "Perfetto Trace Processor")
 
     processes = [
         process for process in (tensorboard_process, perfetto_process) if process
@@ -476,11 +509,15 @@ def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
 
 
 def clean(log_dir: str):
-    if os.path.isdir(log_dir):
-        shutil.rmtree(log_dir)
-        print(f"Removed {log_dir}")
+    target = os.path.abspath(log_dir)
+    logs_root = os.path.abspath(str(VAP_LOGS_DIR))
+    if target != logs_root:
+        raise ValueError(f"Refusing to clean non-VAP logs directory: {target}")
+    if os.path.isdir(target):
+        shutil.rmtree(target)
+        print(f"Removed {target}")
     else:
-        print(f"{log_dir} does not exist; nothing to clean")
+        print(f"{target} does not exist; nothing to clean")
 
 
 def register_signal_handler(container: docker.models.containers.Container):
@@ -498,8 +535,11 @@ def register_signal_handler(container: docker.models.containers.Container):
 def run(args, log_dir: str):
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(log_dir, date_str)
-    os.makedirs(log_path, exist_ok=True)
-    shutil.copy2(args.config, os.path.join(log_path, "config.json"))
+    os.makedirs(log_path, mode=0o700, exist_ok=True)
+    os.chmod(log_path, 0o700)
+    run_config_copy = os.path.join(log_path, "config.json")
+    shutil.copy2(args.config, run_config_copy)
+    os.chmod(run_config_copy, 0o600)
     container = None
 
     logger = setup_logging(

@@ -7,7 +7,7 @@ import gzip
 import io
 import json
 import os
-import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -36,19 +36,24 @@ from runtime_paths import (
     ensure_vap_home,
     resolve_under_vap_home,
 )
+from validation import validate_config_payload
 
 STATIC_DIR = APP_DIR / "public"
 DEFAULT_CONFIG_PATH = APP_DIR / "example-config.json"
 CONFIG_PATH = VAP_CONFIG_PATH
 LOGS_DIR = VAP_LOGS_DIR
 TEMP_CONFIG_DIR = VAP_TEMP_CONFIG_DIR
-SHELL_UNSAFE_PATTERN = re.compile(r"[\n\r;&|`$<>]")
-ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-DEFAULT_VISIBLE_DEVICE_COUNT = 8
 PERFETTO_PORT = 9001
 SERVER_BIND_HOST = "127.0.0.1"
 SERVER_SESSION_ID = uuid.uuid4().hex
+SERVER_AUTH_TOKEN = secrets.token_urlsafe(32)
+SERVER_COOKIE_NAME = f"vap_session_{SERVER_SESSION_ID[:12]}"
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+MAX_PROFILE_ARCHIVE_FILES = 4096
+MAX_PROFILE_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+TEMP_CONFIG_MAX_AGE_SEC = 7 * 24 * 60 * 60
 RUN_LOCK = threading.Lock()
+RUN_START_LOCK = threading.Lock()
 RUN_STATE: dict[str, Any] = {
     "process": None,
     "pid": None,
@@ -69,361 +74,54 @@ SHUTDOWN_CLEANUP_DONE = False
 TORCHPROFILER_SKILL_DIR = APP_DIR / "skills" / "TorchProfilerTraceSkill"
 
 
-def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        config = VAPConfig.model_validate(payload)
-        runtime_errors = validate_runtime_config(config)
-        if runtime_errors:
-            return {
-                "valid": False,
-                "message": "Config validation failed.",
-                "errors": runtime_errors,
-            }
-        return {
-            "valid": True,
-            "message": "Config is valid and can be used for a VAP run.",
-            "summary": build_config_summary(config),
-        }
-    except Exception as exc:
-        return {
-            "valid": False,
-            "message": "Config validation failed.",
-            "errors": format_validation_error(exc),
-        }
-
-
-def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
-    errors: list[dict[str, str]] = []
-    deploy_host = config.vllm_deploy_cfg.get("--host")
-    bench_host = config.vllm_bench_cfg.get("--host")
-    deploy_port = config.vllm_deploy_cfg.get("--port")
-    bench_port = config.vllm_bench_cfg.get("--port")
-
-    if deploy_host is None:
-        errors.append(
-            {"path": "vllm_deploy_cfg.--host", "message": "Missing vLLM deploy host"}
-        )
-    if bench_host is None:
-        errors.append(
-            {"path": "vllm_bench_cfg.--host", "message": "Missing vLLM benchmark host"}
-        )
-    if deploy_host is not None and bench_host is not None and deploy_host != bench_host:
-        errors.append(
-            {
-                "path": "vllm_deploy_cfg.--host",
-                "message": "Deploy host must match benchmark host",
-            }
-        )
-
-    if deploy_port is None:
-        errors.append(
-            {"path": "vllm_deploy_cfg.--port", "message": "Missing vLLM deploy port"}
-        )
-    if bench_port is None:
-        errors.append(
-            {"path": "vllm_bench_cfg.--port", "message": "Missing vLLM benchmark port"}
-        )
-    if deploy_port is not None and bench_port is not None and deploy_port != bench_port:
-        errors.append(
-            {
-                "path": "vllm_deploy_cfg.--port",
-                "message": "Deploy port must match benchmark port",
-            }
-        )
-    if deploy_port is not None and not is_valid_port(deploy_port):
-        errors.append(
-            {
-                "path": "vllm_deploy_cfg.--port",
-                "message": "Port must be an integer from 1 to 65535",
-            }
-        )
-
-    if config.distributed_cfg is not None:
-        distributed = config.distributed_cfg
-        if not is_valid_port(distributed.ray_port):
-            errors.append(
-                {
-                    "path": "distributed_cfg.ray_port",
-                    "message": "Ray port must be an integer from 1 to 65535",
-                }
-            )
-
-    if not is_valid_port(config.profiler_cfg.tensorboard_port):
-        errors.append(
-            {
-                "path": "profiler_cfg.tensorboard_port",
-                "message": "TensorBoard port must be an integer from 1 to 65535",
-            }
-        )
-
-    local_vllm_port = (
-        deploy_port
-        if is_valid_port(deploy_port) and deploy_port == bench_port
-        else None
-    )
-    errors.extend(validate_local_service_port_conflicts(config, local_vllm_port))
-    errors.extend(validate_tensor_parallel_devices(config))
-    errors.extend(validate_risky_config(config))
-    return errors
-
-
-def validate_local_service_port_conflicts(
-    config: VAPConfig,
-    local_vllm_port: int | None,
-) -> list[dict[str, str]]:
-    ports = [
-        (
-            "profiler_cfg.tensorboard_port",
-            "TensorBoard port",
-            config.profiler_cfg.tensorboard_port,
-        ),
-        ("perfetto.port", "Perfetto Trace Processor port", PERFETTO_PORT),
-    ]
-    if local_vllm_port is not None:
-        ports.insert(
-            0, ("vllm_deploy_cfg.--port", "vLLM service port", local_vllm_port)
-        )
-    if config.distributed_cfg is not None:
-        ports.append(
-            (
-                "distributed_cfg.ray_port",
-                "Ray distributed port",
-                config.distributed_cfg.ray_port,
-            )
-        )
-
-    errors: list[dict[str, str]] = []
-    seen: dict[int, tuple[str, str]] = {}
-    for path, name, port in ports:
-        if not is_valid_port(port):
+def parse_cookie_header(header: str | None) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    if not header:
+        return cookies
+    for part in header.split(";"):
+        if "=" not in part:
             continue
-        if port in seen:
-            previous_path, previous_name = seen[port]
-            errors.append(
-                {
-                    "path": path,
-                    "message": f"{name} conflicts with {previous_name}; both use local port {port}",
-                }
-            )
-            errors.append(
-                {
-                    "path": previous_path,
-                    "message": f"{previous_name} conflicts with {name}; both use local port {port}",
-                }
-            )
-        else:
-            seen[port] = (path, name)
-    return errors
+        key, value = part.split("=", 1)
+        cookies[key.strip()] = value.strip()
+    return cookies
 
 
-def validate_tensor_parallel_devices(config: VAPConfig) -> list[dict[str, str]]:
-    tp_value = config.vllm_deploy_cfg.get("-tp")
-    if tp_value is None:
-        return []
-
-    try:
-        tensor_parallel_size = int(tp_value)
-    except (TypeError, ValueError):
-        return [
-            {
-                "path": "vllm_deploy_cfg.-tp",
-                "message": "-tp must be a positive integer",
-            }
-        ]
-
-    if tensor_parallel_size < 1:
-        return [
-            {
-                "path": "vllm_deploy_cfg.-tp",
-                "message": "-tp must be a positive integer",
-            }
-        ]
-
-    devices = config.container_cfg.devices or []
-    visible_device_count = len(devices) if devices else DEFAULT_VISIBLE_DEVICE_COUNT
-    if tensor_parallel_size > visible_device_count:
-        return [
-            {
-                "path": "vllm_deploy_cfg.-tp",
-                "message": (
-                    f"-tp={tensor_parallel_size} exceeds visible GPU device count "
-                    f"{visible_device_count}. Empty devices means all "
-                    f"{DEFAULT_VISIBLE_DEVICE_COUNT} GPUs are visible."
-                ),
-            }
-        ]
-    return []
+def same_origin_allowed(origin: str | None, host: str | None) -> bool:
+    if not origin:
+        return True
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if host and parsed.netloc == host:
+        return True
+    port = host.rsplit(":", 1)[1] if host and ":" in host else ""
+    local_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+    return parsed.netloc in local_hosts
 
 
-def validate_risky_config(config: VAPConfig) -> list[dict[str, str]]:
-    errors: list[dict[str, str]] = []
-
-    model_name = config.model_cfg.model_name
-    if os.path.isabs(model_name) or ".." in Path(model_name).parts:
-        errors.append(
-            {
-                "path": "model_cfg.model_name",
-                "message": "Model name cannot be an absolute path or contain '..'",
-            }
-        )
-    if has_shell_unsafe_chars(model_name):
-        errors.append(
-            {
-                "path": "model_cfg.model_name",
-                "message": "Model name contains shell-unsafe characters",
-            }
-        )
-
-    image = config.docker_image
-    if has_shell_unsafe_chars(image) or any(ch.isspace() for ch in image):
-        errors.append(
-            {
-                "path": "container_cfg.image_name",
-                "message": "Docker image name or tag cannot contain whitespace or shell-unsafe characters",
-            }
-        )
-
-    for cfg_name, cfg in (
-        ("vllm_deploy_cfg", config.vllm_deploy_cfg),
-        ("vllm_bench_cfg", config.vllm_bench_cfg),
-    ):
-        errors.extend(validate_cli_args(cfg_name, cfg))
-
-    for key, value in (config.container_cfg.env_vars or {}).items():
-        if not ENV_KEY_PATTERN.match(key):
-            errors.append(
-                {
-                    "path": f"container_cfg.env_vars.{key}",
-                    "message": "Environment variable keys can only contain letters, digits, and underscores, and cannot start with a digit",
-                }
-            )
-        if has_shell_unsafe_chars(value):
-            errors.append(
-                {
-                    "path": f"container_cfg.env_vars.{key}",
-                    "message": "Environment variable value contains newlines or shell-unsafe characters",
-                }
-            )
-
-    for index, mount in enumerate(config.container_cfg.mounts or []):
-        if not os.path.isabs(mount.source):
-            errors.append(
-                {
-                    "path": f"container_cfg.mounts.{index}.source",
-                    "message": "Host mount source must be an absolute path",
-                }
-            )
-        if not os.path.isabs(mount.target):
-            errors.append(
-                {
-                    "path": f"container_cfg.mounts.{index}.target",
-                    "message": "Container mount target must be an absolute path",
-                }
-            )
-        if has_shell_unsafe_chars(mount.source) or has_shell_unsafe_chars(mount.target):
-            errors.append(
-                {
-                    "path": f"container_cfg.mounts.{index}",
-                    "message": "Mount path contains shell-unsafe characters",
-                }
-            )
-
-    for index, device in enumerate(config.container_cfg.devices or []):
-        if not os.path.isabs(device):
-            errors.append(
-                {
-                    "path": f"container_cfg.devices.{index}",
-                    "message": "Device path must be an absolute path",
-                }
-            )
-        if has_shell_unsafe_chars(device):
-            errors.append(
-                {
-                    "path": f"container_cfg.devices.{index}",
-                    "message": "Device path contains shell-unsafe characters",
-                }
-            )
-
-    return errors
-
-
-def validate_cli_args(cfg_name: str, cfg: dict[str, Any]) -> list[dict[str, str]]:
-    errors: list[dict[str, str]] = []
-    for key, value in cfg.items():
-        if not key.startswith("-"):
-            errors.append(
-                {
-                    "path": f"{cfg_name}.{key}",
-                    "message": "CLI argument key must start with '-'",
-                }
-            )
-        if has_shell_unsafe_chars(key) or any(ch.isspace() for ch in key):
-            errors.append(
-                {
-                    "path": f"{cfg_name}.{key}",
-                    "message": "CLI argument key cannot contain whitespace or shell-unsafe characters",
-                }
-            )
-        if value is not None and isinstance(value, str):
-            if has_shell_unsafe_chars(value):
-                errors.append(
-                    {
-                        "path": f"{cfg_name}.{key}",
-                        "message": "CLI argument value contains shell-unsafe characters",
-                    }
-                )
-            if any(ch.isspace() for ch in value):
-                errors.append(
-                    {
-                        "path": f"{cfg_name}.{key}",
-                        "message": "CLI argument value does not currently support whitespace",
-                    }
-                )
-    return errors
-
-
-def has_shell_unsafe_chars(value: Any) -> bool:
-    return isinstance(value, str) and bool(SHELL_UNSAFE_PATTERN.search(value))
-
-
-def is_valid_port(port: Any) -> bool:
-    return isinstance(port, int) and 1 <= port <= 65535
-
-
-def format_validation_error(exc: Exception) -> list[dict[str, str]]:
-    errors = getattr(exc, "errors", None)
-    if callable(errors):
-        return [
-            {
-                "path": ".".join(str(part) for part in item.get("loc", [])) or "root",
-                "message": item.get("msg", str(exc)),
-            }
-            for item in errors()
-        ]
-    return [{"path": "root", "message": str(exc)}]
-
-
-def build_config_summary(config: VAPConfig) -> dict[str, Any]:
-    distributed = config.distributed_cfg
-    return {
-        "model": config.model_cfg.model_name,
-        "model_path": config.model_path,
-        "docker_image": config.docker_image,
-        "vllm_host": config.vllm_host,
-        "vllm_port": config.vllm_port,
-        "distributed": bool(distributed),
-        "node_count": distributed.num_nodes if distributed else 1,
-    }
+def cleanup_old_temp_configs(now: float | None = None) -> None:
+    if not TEMP_CONFIG_DIR.is_dir():
+        return
+    cutoff = (now or time.time()) - TEMP_CONFIG_MAX_AGE_SEC
+    for path in TEMP_CONFIG_DIR.glob("vap-config-*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
 
 
 def save_temp_config(payload: dict[str, Any]) -> Path:
     ensure_vap_home()
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    TEMP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    TEMP_CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    TEMP_CONFIG_DIR.chmod(0o700)
+    cleanup_old_temp_configs()
     temp_path = TEMP_CONFIG_DIR / f"vap-config-{timestamp}-{uuid.uuid4().hex[:8]}.json"
     with temp_path.open("w", encoding="utf-8") as config_file:
         json.dump(payload, config_file, indent=4, ensure_ascii=False)
         config_file.write("\n")
+    temp_path.chmod(0o600)
     return temp_path
 
 
@@ -835,7 +533,21 @@ def build_current_profile_archive(raw_run_dir: str | None = None) -> tuple[str, 
     if not profile_dir.is_dir() or not profile_dir.is_relative_to(LOGS_DIR.resolve()):
         raise ValueError("This run has not generated a vllm-profile directory yet")
 
-    files = [path for path in profile_dir.rglob("*") if path.is_file()]
+    files: list[Path] = []
+    total_size = 0
+    for path in profile_dir.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        resolved = path.resolve()
+        if not resolved.is_relative_to(profile_dir):
+            continue
+        size = resolved.stat().st_size
+        total_size += size
+        if len(files) >= MAX_PROFILE_ARCHIVE_FILES:
+            raise ValueError("The vllm-profile directory has too many files to archive")
+        if total_size > MAX_PROFILE_ARCHIVE_BYTES:
+            raise ValueError("The vllm-profile archive would exceed the size limit")
+        files.append(resolved)
     if not files:
         raise ValueError("The vllm-profile directory is empty")
 
@@ -935,6 +647,15 @@ def stop_process_group_sync(
 
 
 def start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
+    if not RUN_START_LOCK.acquire(blocking=False):
+        raise RuntimeError("VAP is already starting")
+    try:
+        return _start_vap_run(config_path)
+    finally:
+        RUN_START_LOCK.release()
+
+
+def _start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
     with RUN_LOCK:
         process = RUN_STATE["process"]
         is_running = (
@@ -956,44 +677,76 @@ def start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
     LOGS_DIR.mkdir(exist_ok=True)
     existing_dirs = {path.name for path in LOGS_DIR.iterdir() if path.is_dir()}
     started_at = time.time()
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "main.py",
-            "run",
-            "--config",
-            str(run_config_path),
-            "--visualization-host",
-            SERVER_BIND_HOST,
-        ],
-        cwd=str(APP_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
-    )
     with RUN_LOCK:
+        process = RUN_STATE["process"]
+        if RUN_STATE["running"]:
+            if process is None or process.poll() is None:
+                raise RuntimeError("VAP is already starting or running")
+            RUN_STATE["running"] = False
         RUN_STATE.update(
             {
-                "process": process,
-                "pid": process.pid,
+                "process": None,
+                "pid": None,
                 "running": True,
                 "exit_code": None,
                 "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "ended_at": None,
                 "run_dir": None,
                 "config_path": run_config_path,
-                "output": f"--- VAP started (pid {process.pid}) ---\n",
+                "output": "--- VAP is starting ---\n",
                 "stop_requested": False,
             }
         )
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "main.py",
+                "run",
+                "--config",
+                str(run_config_path),
+                "--visualization-host",
+                SERVER_BIND_HOST,
+            ],
+            cwd=str(APP_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+    except Exception:
+        with RUN_LOCK:
+            RUN_STATE.update(
+                {
+                    "process": None,
+                    "pid": None,
+                    "running": False,
+                    "exit_code": None,
+                    "ended_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "output": RUN_STATE["output"] + "--- VAP failed to start ---\n",
+                }
+            )
+        raise
+    with RUN_LOCK:
+        RUN_STATE.update(
+            {
+                "process": process,
+                "pid": process.pid,
+                "output": RUN_STATE["output"]
+                + f"--- VAP started (pid {process.pid}) ---\n",
+            }
+        )
+        stop_requested = RUN_STATE["stop_requested"]
     thread = threading.Thread(
         target=monitor_run_process,
         args=(process, existing_dirs, started_at),
         daemon=True,
     )
     thread.start()
+    if stop_requested:
+        terminate_run_process(process)
+        force_kill_process_group_later(process)
     return get_run_state_snapshot()
 
 
@@ -1109,12 +862,15 @@ def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
         is_running = (
             RUN_STATE["running"] and process is not None and process.poll() is None
         )
-        if is_running:
+        is_starting = RUN_STATE["running"] and process is None
+        if is_running or is_starting:
             RUN_STATE["stop_requested"] = True
             RUN_STATE[
                 "output"
             ] += "\n--- Server is exiting; stopping active VAP run ---\n"
 
+    if is_starting:
+        return
     if not is_running or process is None:
         terminate_recorded_visualization_pids(run_dir)
         return
@@ -1129,6 +885,15 @@ def stop_vap_run() -> dict[str, Any]:
     with RUN_LOCK:
         process = RUN_STATE["process"]
         run_dir = Path(RUN_STATE["run_dir"]).resolve() if RUN_STATE["run_dir"] else None
+        is_starting = RUN_STATE["running"] and process is None
+        if is_starting:
+            RUN_STATE["stop_requested"] = True
+            RUN_STATE["output"] += "\n--- Stop requested while VAP is starting ---\n"
+    if is_starting:
+        return {
+            "message": "Stop requested. VAP will be terminated as soon as it starts.",
+            **get_run_state_snapshot(),
+        }
     if process is None or process.poll() is not None:
         terminate_recorded_visualization_pids(run_dir)
         return {"message": "There is no active VAP run", **get_run_state_snapshot()}
@@ -1692,6 +1457,20 @@ def get_agent_status_payload() -> dict[str, Any]:
     }
 
 
+def start_agent_run(args: dict[str, Any]) -> dict[str, Any]:
+    payload = args.get("config")
+    if not isinstance(payload, dict):
+        return start_vap_run()
+
+    validation = validate_config_payload(payload)
+    if not validation["valid"]:
+        raise ValueError(
+            "Agent run config validation failed: "
+            + json.dumps(validation["errors"], ensure_ascii=False)
+        )
+    return start_vap_run(save_temp_config(payload))
+
+
 def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
     runtime.register_tool(
         AgentTool(
@@ -1790,7 +1569,7 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
                 {
                     "query_name": {
                         "type": "string",
-                        "enum": sorted(PERFETTO_SQL_QUERIES),
+                        "enum": sorted(load_skill_queries()),
                     },
                     "preferred_name": {
                         "type": "string",
@@ -1877,14 +1656,14 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
     runtime.register_tool(
         AgentTool(
             name="start_run",
-            description="Start a VAP run. Requires explicit user approval.",
+            description=(
+                "Start a VAP run. Requires explicit user approval. "
+                "profiler_cfg.torch_profiler_dir is immutable and must retain "
+                "the value returned by get_config."
+            ),
             safety="requires_approval",
             parameters=object_schema({"config": {"type": "object"}}),
-            handler=lambda args: start_vap_run(
-                save_temp_config(args["config"])
-                if isinstance(args.get("config"), dict)
-                else None
-            ),
+            handler=start_agent_run,
         )
     )
     runtime.register_tool(
@@ -1901,8 +1680,70 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
 class VAPConfigHandler(BaseHTTPRequestHandler):
     server_version = "VAPConfigServer/0.1"
 
+    def token_from_request(self, parsed: Any) -> str | None:
+        query_token = (
+            parse_qs(parsed.query).get("token", [None])[0]
+            if parsed.path == "/"
+            else None
+        )
+        if query_token:
+            return query_token
+        header_token = self.headers.get("X-VAP-Token")
+        if header_token:
+            return header_token
+        cookies = parse_cookie_header(self.headers.get("Cookie"))
+        return cookies.get(SERVER_COOKIE_NAME)
+
+    def is_authenticated(self, parsed: Any) -> bool:
+        token = self.token_from_request(parsed)
+        if token and secrets.compare_digest(token, SERVER_AUTH_TOKEN):
+            if parse_qs(parsed.query).get("token", [None])[0] == token:
+                self._issue_auth_cookie = True
+            return True
+        return False
+
+    def require_authorized(
+        self,
+        parsed: Any,
+        *,
+        require_json: bool = False,
+        require_same_origin: bool = False,
+    ) -> bool:
+        if not self.is_authenticated(parsed):
+            self.send_json(
+                {"message": "Unauthorized. Open the URL printed by vap start."},
+                HTTPStatus.UNAUTHORIZED,
+            )
+            return False
+        if require_same_origin and not same_origin_allowed(
+            self.headers.get("Origin"), self.headers.get("Host")
+        ):
+            self.send_json({"message": "Origin is not allowed"}, HTTPStatus.FORBIDDEN)
+            return False
+        if require_json:
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.lower().startswith("application/json"):
+                self.send_json(
+                    {"message": "Content-Type must be application/json"},
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                )
+                return False
+        return True
+
+    def send_auth_cookie_if_needed(self) -> None:
+        if getattr(self, "_issue_auth_cookie", False):
+            self.send_header(
+                "Set-Cookie",
+                f"{SERVER_COOKIE_NAME}={SERVER_AUTH_TOKEN}; Path=/; HttpOnly; SameSite=Strict",
+            )
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/favicon.svg":
+            self.serve_static("favicon.svg")
+            return
+        if not self.require_authorized(parsed):
+            return
         if parsed.path == "/":
             self.serve_static("index.html")
             return
@@ -1930,9 +1771,6 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/agent/status":
             self.handle_agent_status()
             return
-        if parsed.path == "/favicon.svg":
-            self.serve_static("favicon.svg")
-            return
         if parsed.path.startswith("/public/"):
             self.serve_static(parsed.path.removeprefix("/public/"))
             return
@@ -1940,6 +1778,10 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         parsed = urlparse(self.path)
+        if not self.require_authorized(
+            parsed, require_json=True, require_same_origin=True
+        ):
+            return
         if parsed.path != "/api/config":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -1974,10 +1816,16 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         if handler is None and (
             parsed.path == "/tensorboard" or parsed.path.startswith("/tensorboard/")
         ):
+            if not self.require_authorized(parsed, require_same_origin=True):
+                return
             self.handle_tensorboard_proxy(parsed)
             return
         if handler is None:
             self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not self.require_authorized(
+            parsed, require_json=True, require_same_origin=True
+        ):
             return
         try:
             handler()
@@ -1987,6 +1835,8 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             )
         except ValueError as exc:
             self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except RuntimeError as exc:
+            self.send_json({"message": str(exc)}, HTTPStatus.CONFLICT)
         except TimeoutError as exc:
             self.send_json(
                 {"message": f"Request timed out: {exc}"},
@@ -2032,6 +1882,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         with CONFIG_PATH.open("w", encoding="utf-8") as config_file:
             json.dump(payload, config_file, indent=4, ensure_ascii=False)
             config_file.write("\n")
+        CONFIG_PATH.chmod(0o600)
         self.send_json(
             {
                 "message": "Config saved",
@@ -2180,6 +2031,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
                 continue
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(content)))
+        self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
 
@@ -2268,6 +2120,8 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
 
     def handle_run_start(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
+        if length > MAX_JSON_BODY_BYTES:
+            raise ValueError("Request body is too large")
         config_path = None
         if length > 0:
             raw_body = self.rfile.read(length)
@@ -2292,6 +2146,8 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
 
     def read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
+        if length > MAX_JSON_BODY_BYTES:
+            raise ValueError("Request body is too large")
         raw_body = self.rfile.read(length)
         payload = json.loads(raw_body.decode("utf-8"))
         if not isinstance(payload, dict):
@@ -2316,6 +2172,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
+        self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
 
@@ -2326,6 +2183,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
+        self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
 
@@ -2341,6 +2199,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         if content_disposition:
             self.send_header("Content-Disposition", content_disposition)
+        self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
 
@@ -2367,7 +2226,11 @@ def main(argv: list[str] | None = None) -> None:
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
     server = ThreadingHTTPServer((args.host, args.port), VAPConfigHandler)
+    display_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     print(f"VAP config UI started: http://{args.host}:{args.port}")
+    print(
+        f"Open VAP with this session URL: http://{display_host}:{args.port}/?token={SERVER_AUTH_TOKEN}"
+    )
     print(f"VAP home: {VAP_HOME}")
     print(f"Temporary config files will be saved to: {TEMP_CONFIG_DIR}")
     try:

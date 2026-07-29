@@ -1,21 +1,29 @@
-from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel
 import os
+import shlex
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict
+
+TORCH_PROFILER_DIR = "/app/VAP/log/vllm-profile"
 
 
-class ModelConfig(BaseModel):
+class StrictBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ModelConfig(StrictBaseModel):
     model_name: str
     model_path: str
 
 
-class DistributedConfig(BaseModel):
+class DistributedConfig(StrictBaseModel):
     num_nodes: int
     ray_port: int
     head_node: Literal["localhost"]
     worker_nodes: List[str]
 
 
-class ProfilerConfig(BaseModel):
+class ProfilerConfig(StrictBaseModel):
     profiler: str
     torch_profiler_dir: str
     torch_profiler_record_shapes: bool
@@ -28,13 +36,13 @@ class ProfilerConfig(BaseModel):
     tensorboard_port: int = 6006
 
 
-class MountConfig(BaseModel):
+class MountConfig(StrictBaseModel):
     target: str
     source: str
     type: Optional[str] = "bind"
 
 
-class DockerConfig(BaseModel):
+class DockerConfig(StrictBaseModel):
     image_name: str
     image_tag: str
     devices: Optional[List[str]] = None
@@ -42,7 +50,7 @@ class DockerConfig(BaseModel):
     env_vars: Optional[Dict[str, str]] = None
 
 
-class VAPConfig(BaseModel):
+class VAPConfig(StrictBaseModel):
     model_cfg: ModelConfig
     distributed_cfg: Optional[DistributedConfig] = None
     vllm_deploy_cfg: Dict[str, Any]
@@ -60,16 +68,22 @@ class VAPConfig(BaseModel):
 
     @property
     def vllm_host(self) -> str:
-        assert "--host" in self.vllm_deploy_cfg
-        assert "--host" in self.vllm_bench_cfg
-        assert self.vllm_deploy_cfg["--host"] == self.vllm_bench_cfg["--host"]
+        if "--host" not in self.vllm_deploy_cfg:
+            raise ValueError("vllm_deploy_cfg.--host is required")
+        if "--host" not in self.vllm_bench_cfg:
+            raise ValueError("vllm_bench_cfg.--host is required")
+        if self.vllm_deploy_cfg["--host"] != self.vllm_bench_cfg["--host"]:
+            raise ValueError("vLLM deploy and benchmark hosts must match")
         return self.vllm_deploy_cfg["--host"]
 
     @property
     def vllm_port(self) -> int:
-        assert "--port" in self.vllm_deploy_cfg
-        assert "--port" in self.vllm_bench_cfg
-        assert self.vllm_deploy_cfg["--port"] == self.vllm_bench_cfg["--port"]
+        if "--port" not in self.vllm_deploy_cfg:
+            raise ValueError("vllm_deploy_cfg.--port is required")
+        if "--port" not in self.vllm_bench_cfg:
+            raise ValueError("vllm_bench_cfg.--port is required")
+        if self.vllm_deploy_cfg["--port"] != self.vllm_bench_cfg["--port"]:
+            raise ValueError("vLLM deploy and benchmark ports must match")
         return self.vllm_deploy_cfg["--port"]
 
     def build_profiler_cli_args_dict(self) -> dict[str, object]:
@@ -80,17 +94,29 @@ class VAPConfig(BaseModel):
             args[f"--profiler-config.{k}"] = v
         return args
 
-    def vllm_deploy_args_str(self) -> str:
-
+    def vllm_deploy_args(self) -> list[str]:
         deploy_args = dict(self.vllm_deploy_cfg)
         deploy_args.update(self.build_profiler_cli_args_dict())
-        return self.build_cli_rgs_str(deploy_args)
+        return self.build_cli_args(deploy_args)
+
+    def vllm_deploy_args_str(self) -> str:
+        return shlex.join(self.vllm_deploy_args())
+
+    def vllm_bench_args(self) -> list[str]:
+        return self.build_cli_args(dict(self.vllm_bench_cfg))
 
     def vllm_bench_args_str(self) -> str:
-        bench_args = dict(self.vllm_bench_cfg)
-        return self.build_cli_rgs_str(bench_args)
+        return shlex.join(self.vllm_bench_args())
+
+    def build_cli_args(self, args_dict: Dict[str, Any]) -> list[str]:
+        args: list[str] = []
+        for key, value in args_dict.items():
+            args.append(str(key))
+            if value is not None:
+                if isinstance(value, bool):
+                    value = str(value).lower()
+                args.append(str(value))
+        return args
 
     def build_cli_rgs_str(self, args_dict: Dict[str, Any]) -> str:
-        return " ".join(
-            f"{k} {v}" if v is not None else k for k, v in args_dict.items()
-        )
+        return shlex.join(self.build_cli_args(args_dict))

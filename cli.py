@@ -18,6 +18,7 @@ def main(argv: list[str] | None = None) -> None:
 
     run_parser = subparsers.add_parser("run", help="Run the VAP workflow")
     run_parser.add_argument("--config", default=str(VAP_CONFIG_PATH))
+    run_parser.add_argument("--visualization-host", default="127.0.0.1")
 
     clean_parser = subparsers.add_parser("clean", help="Remove generated VAP logs")
     clean_parser.add_argument("--logs-dir", default=str(VAP_LOGS_DIR))
@@ -29,12 +30,19 @@ def main(argv: list[str] | None = None) -> None:
             (APP_DIR / "example-config.json").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
+        VAP_CONFIG_PATH.chmod(0o600)
     if args.command == "start":
         vap_server.main(["--host", args.host, "--port", str(args.port)])
     elif args.command == "run":
-        vap_workflow.run(SimpleNamespace(config=args.config), str(VAP_LOGS_DIR))
+        vap_workflow.run(
+            SimpleNamespace(
+                config=args.config,
+                visualization_host=args.visualization_host,
+            ),
+            str(VAP_LOGS_DIR),
+        )
     elif args.command == "clean":
-        vap_workflow.clean(os.path.abspath(args.logs_dir))
+        vap_workflow.clean(args.logs_dir)
 
 
 if __name__ == "__main__":

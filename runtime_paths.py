@@ -16,6 +16,7 @@ VAP_CACHE_DIR = VAP_HOME / "cache"
 
 
 def ensure_vap_home() -> None:
+    private_paths = {VAP_HOME, VAP_TMP_DIR, VAP_TEMP_CONFIG_DIR}
     for path in (
         VAP_HOME,
         VAP_BIN_DIR,
@@ -25,7 +26,10 @@ def ensure_vap_home() -> None:
         VAP_PERFETTO_HOME,
         VAP_CACHE_DIR,
     ):
-        path.mkdir(parents=True, exist_ok=True)
+        mode = 0o700 if path in private_paths else 0o755
+        path.mkdir(parents=True, exist_ok=True, mode=mode)
+        if path in private_paths:
+            path.chmod(0o700)
 
 
 def resolve_under_vap_home(path: str | Path) -> Path:
