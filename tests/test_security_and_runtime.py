@@ -343,6 +343,29 @@ class RuntimeAndCliTests(unittest.TestCase):
         args, _ = run.call_args.args
         self.assertEqual(args.visualization_host, "localhost")
 
+    def test_cli_uninstall_forwards_options_to_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            (app_dir / "uninstall.sh").write_text("#!/usr/bin/env bash\n")
+            with (
+                patch.object(cli, "APP_DIR", app_dir),
+                patch.object(cli, "ensure_vap_home") as ensure_vap_home,
+                patch.object(cli.os, "execvp") as execvp,
+            ):
+                cli.main(["uninstall", "--purge", "--remove-source", "--yes"])
+
+        execvp.assert_called_once_with(
+            "bash",
+            [
+                "bash",
+                str(app_dir / "uninstall.sh"),
+                "--purge",
+                "--remove-source",
+                "--yes",
+            ],
+        )
+        ensure_vap_home.assert_not_called()
+
     def test_clean_refuses_non_vap_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

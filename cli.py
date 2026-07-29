@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from types import SimpleNamespace
 
 import main as vap_workflow
@@ -23,7 +24,45 @@ def main(argv: list[str] | None = None) -> None:
     clean_parser = subparsers.add_parser("clean", help="Remove generated VAP logs")
     clean_parser.add_argument("--logs-dir", default=str(VAP_LOGS_DIR))
 
+    uninstall_parser = subparsers.add_parser(
+        "uninstall",
+        help="Uninstall VAP while preserving config and logs by default",
+    )
+    uninstall_parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="Also remove config, logs, and all files under VAP_HOME",
+    )
+    uninstall_parser.add_argument(
+        "--remove-source",
+        action="store_true",
+        help="Also remove the managed bootstrap source checkout",
+    )
+    uninstall_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Do not ask for interactive confirmation",
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "uninstall":
+        uninstall_script = APP_DIR / "uninstall.sh"
+        if not uninstall_script.is_file():
+            raise FileNotFoundError(f"Uninstall script not found: {uninstall_script}")
+
+        command = ["bash", str(uninstall_script)]
+        if args.purge:
+            command.append("--purge")
+        if args.remove_source:
+            command.append("--remove-source")
+        if args.yes:
+            command.append("--yes")
+
+        # Replace the current vap process so uninstall.sh can safely remove the
+        # virtual environment containing this CLI executable.
+        os.execvp(command[0], command)
+        return
+
     ensure_vap_home()
     if not VAP_CONFIG_PATH.is_file():
         VAP_CONFIG_PATH.write_text(

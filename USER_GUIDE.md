@@ -610,18 +610,19 @@ the virtual environment, downloaded tools, and caches while preserving
 `~/.vap/config.json` and `~/.vap/logs/`:
 
 ```bash
-bash uninstall.sh
+vap uninstall
 ```
 
 To remove all runtime data and the managed bootstrap source checkout:
 
 ```bash
-bash uninstall.sh --purge --remove-source
+vap uninstall --purge --remove-source
 ```
 
 Use `--yes` for non-interactive environments. If installation used custom
 `VAP_HOME` or `VAP_SOURCE_DIR` values, pass the same environment variables to
-the uninstaller.
+the uninstaller. From a source checkout, `bash uninstall.sh` remains available
+as a fallback.
 
 ## 13. Third-Party Attribution
 

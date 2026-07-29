@@ -42,7 +42,7 @@ Make sure Docker is available and the configured image, model path, devices, and
 Stop VAP, then run:
 
 ```bash
-bash uninstall.sh
+vap uninstall
 ```
 
 The default uninstall removes VAP executables, its virtual environment, downloaded tools, and caches while preserving `~/.vap/config.json` and `~/.vap/logs/`.
@@ -50,10 +50,11 @@ The default uninstall removes VAP executables, its virtual environment, download
 To remove all VAP runtime data and the managed bootstrap source checkout:
 
 ```bash
-bash uninstall.sh --purge --remove-source
+vap uninstall --purge --remove-source
 ```
 
 Use `--yes` for non-interactive environments. Custom `VAP_HOME` and `VAP_SOURCE_DIR` values should be supplied to the uninstaller in the same way they were supplied during installation.
+From a source checkout, `bash uninstall.sh` remains available as a fallback.
 
 ## Start the UI
 
