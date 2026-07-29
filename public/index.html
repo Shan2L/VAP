@@ -1918,9 +1918,14 @@
     const DEFAULT_CONFIG = {
       model_cfg: {
         model_name: "Qwen/Qwen3-0.6B",
-        model_path: "/path/to/huggingface",
+        model_path: "/home/nfs_share/huggingface/",
       },
-      distributed_cfg: null,
+      distributed_cfg: {
+        num_nodes: 2,
+        ray_port: 6379,
+        head_node: "localhost",
+        worker_nodes: ["cse-ai-10.amd.com", "cse-ai-amd.com"],
+      },
       vllm_deploy_cfg: {
         "--host": "0.0.0.0",
         "--port": 8080,
@@ -1957,10 +1962,22 @@
         tensorboard_port: 6006,
       },
       container_cfg: {
-        image_name: "your-registry/vllm",
-        image_tag: "latest",
-        devices: [],
-        mounts: [],
+        image_name: "mkmhub.amd.com/sw-cserocmopt-dev/release/wuxi_w7800/vllm0.16.0_pytorch2.9.1_rocm7.2",
+        image_tag: "20260311",
+        devices: [
+          "/dev/dri/renderD134",
+          "/dev/dri/renderD135",
+        ],
+        mounts: [
+          {
+            target: "/home/sylvan",
+            source: "/home/DomainUsers/syliu",
+          },
+          {
+            target: "/home/nfs_share/huggingface/",
+            source: "/home/nfs_share/huggingface/",
+          },
+        ],
         env_vars: {
           VLLM_USE_TRITON_FLASH_ATTN: "1",
           PYTORCH_TUNABLEOP_ENABLED: "0",

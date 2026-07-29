@@ -1,24 +1,40 @@
 {
     "model_cfg": {
-        "model_name": "Qwen/Qwen3-0.6B",
-        "model_path": "/path/to/huggingface"
+        "model_name": "Qwen/Qwen3.6-35B-A3B",
+        "model_path": "/home/nfs_share/huggingface/"
     },
 
-   "distributed_cfg": null,
+
+   "distributed_cfg": {
+       "num_nodes": 2,
+       "ray_port": 6379,
+       "head_node": "localhost",
+       "worker_nodes": ["cse-ai-10.amd.com", "cse-ai-11.amd.com"]
+   },
 
 
     "container_cfg": {
-        "image_name": "your-registry/vllm",
-        "image_tag": "latest",
-        "devices": [],
-        "mounts": [],
+        "image_name": "rocm/vllm",
+        "image_tag": "rocm7.14.0_rdna_ubuntu24.04_py3.14_pytorch_2.11.0_vllm_0.23.0",
+        "devices": [
+            "/dev/dri/renderD132",
+            "/dev/dri/renderD133",
+            "/dev/dri/renderD134",
+            "/dev/dri/renderD135"
+        ],
+        "mounts": [
+            {
+                "target": "/home/nfs_share/huggingface/",
+                "source": "/home/nfs_share/huggingface/"
+            }
+        ],
         "env_vars": {
             "VLLM_USE_TRITON_FLASH_ATTN": "1",      
             "PYTORCH_TUNABLEOP_ENABLED": "0",
             "PYTORCH_TUNABLEOP_TUNING": "0",
             "PYTORCH_TUNABLEOP_VERBOSE": "0",
             "PYTHONPATH": "/opt/rocm/lib",
-            "NCCL_P2P_DISABLE": "1",
+            "NCCL_P2P_DISABLE": "0",
             "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
             "VLLM_MLA_DISABLE": "1",
             "NCCL_DEBUG": "VERSION"
@@ -34,7 +50,8 @@
         "--no-enable-prefix-caching": null,
         "--gpu-memory-utilization": 0.9,
         "--max-model-len": 32768,
-        "-tp": 2
+        "-tp": 2,
+        "-pp": 2
    },
 
    "profiler_cfg": {
@@ -45,8 +62,8 @@
         "torch_profiler_with_memory": true,
         "torch_profiler_with_flops": false,
         "torch_profiler_use_gzip": true,
-        "delay_iterations": 0,
-        "max_iterations": 10,
+        "delay_iterations": 1,
+        "max_iterations": 20,
         "tensorboard_port": 6006
     },
 
@@ -59,9 +76,9 @@
         "--ignore-eos": null,
         "--dataset-name": "random",
         "--random-input-len": 2048,
-        "--random-output-len": 128,
-        "--max-concurrency": 32,
-        "--num-prompts": 64,
+        "--random-output-len": 1024,
+        "--max-concurrency": 64,
+        "--num-prompts": 1024,
         "--request-rate": "inf"
    }
 }
