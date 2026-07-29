@@ -58,14 +58,6 @@ def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
     deploy_port = config.vllm_deploy_cfg.get("--port")
     bench_port = config.vllm_bench_cfg.get("--port")
 
-    if config.distributed_cfg is not None:
-        errors.append(
-            {
-                "path": "distributed_cfg",
-                "message": "Distributed runs are not supported yet; remove distributed_cfg for now.",
-            }
-        )
-
     if config.profiler_cfg.torch_profiler_dir != TORCH_PROFILER_DIR:
         errors.append(
             {
@@ -345,17 +337,24 @@ def validate_cli_args(cfg_name: str, cfg: dict[str, Any]) -> list[dict[str, str]
 
 def build_security_warnings(config: VAPConfig) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
+    if config.distributed_cfg is not None:
+        warnings.append(
+            {
+                "path": "distributed_cfg",
+                "message": "Distributed mode is unavailable; VAP will run locally.",
+            }
+        )
     if "--trust-remote-code" in config.vllm_deploy_cfg:
         warnings.append(
             {
                 "path": "vllm_deploy_cfg.--trust-remote-code",
-                "message": "trust-remote-code executes model repository code inside the VAP container. Keep it only for trusted models.",
+                "message": "--trust-remote-code is enabled; trust the model source.",
             }
         )
     warnings.append(
         {
             "path": "container_cfg.runtime",
-            "message": "VAP currently uses host networking, elevated Docker capabilities, and ROCm device mounts. Run only trusted models and configs.",
+            "message": "Host networking and elevated container permissions are enabled.",
         }
     )
     return warnings

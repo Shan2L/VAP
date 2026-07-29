@@ -135,8 +135,8 @@ The default configuration path is:
 ```
 
 Configuration validation is strict. Unknown fields, invalid ports, mismatched
-deployment and benchmark addresses, unsafe CLI characters, and unsupported
-distributed configurations are rejected.
+deployment and benchmark addresses, and unsafe CLI characters are rejected.
+Distributed configuration currently produces a warning and runs locally.
 
 ### 5.1 `model_cfg`
 
@@ -154,7 +154,9 @@ The model root directory is automatically mounted in the container at `/tmp/vap/
 
 ### 5.2 `distributed_cfg`
 
-Distributed execution is not currently implemented. This field must be set as follows:
+Distributed execution is not currently implemented. The field may remain in the
+configuration for future use, but VAP displays a warning and ignores it during
+the current local run.
 
 ```json
 "distributed_cfg": null
@@ -496,7 +498,8 @@ VAP does not ignore spelling errors. Compare the configuration with
 
 ### `Distributed runs are not supported yet`
 
-Set `distributed_cfg` to `null`.
+VAP currently ignores `distributed_cfg` and continues in local mode. Set it to
+`null` to hide the warning.
 
 ### Docker Image Does Not Exist
 
@@ -602,16 +605,23 @@ In development mode:
 uv pip install --python .venv/bin/python -e .
 ```
 
-Stop VAP before uninstalling. Clean the logs and remove the installed files:
+Stop VAP before uninstalling. The default command removes VAP executables,
+the virtual environment, downloaded tools, and caches while preserving
+`~/.vap/config.json` and `~/.vap/logs/`:
 
 ```bash
-vap clean
-rm -rf ~/.vap
-rm -f ~/.local/bin/vap
+bash uninstall.sh
 ```
 
-If you use a custom `VAP_HOME`, delete that directory instead of the default
-`~/.vap`.
+To remove all runtime data and the managed bootstrap source checkout:
+
+```bash
+bash uninstall.sh --purge --remove-source
+```
+
+Use `--yes` for non-interactive environments. If installation used custom
+`VAP_HOME` or `VAP_SOURCE_DIR` values, pass the same environment variables to
+the uninstaller.
 
 ## 13. Third-Party Attribution
 

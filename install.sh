@@ -103,6 +103,11 @@ VAP_HOME="\${VAP_HOME:-$VAP_HOME}" exec "$VENV_DIR/bin/vap" "\$@"
 EOF
 chmod +x "$VAP_WRAPPER"
 
+# Marker used by uninstall.sh to distinguish a managed VAP runtime directory
+# from an unrelated user directory.
+printf 'installed_from=%s\n' "$(pwd -P)" > "$VAP_HOME/.vap-installed"
+chmod 0600 "$VAP_HOME/.vap-installed"
+
 echo "VAP installed successfully."
 echo "Runtime files: $VAP_HOME"
 echo "Command: $VAP_WRAPPER"

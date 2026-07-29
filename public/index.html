@@ -1915,83 +1915,18 @@
       history.replaceState(null, "", `${initialUrl.pathname}${initialUrl.search}${initialUrl.hash}`);
     }
 
-    const DEFAULT_CONFIG = {
-      model_cfg: {
-        model_name: "Qwen/Qwen3-0.6B",
-        model_path: "/home/nfs_share/huggingface/",
-      },
-      distributed_cfg: {
-        num_nodes: 2,
-        ray_port: 6379,
-        head_node: "localhost",
-        worker_nodes: ["cse-ai-10.amd.com", "cse-ai-amd.com"],
-      },
-      vllm_deploy_cfg: {
-        "--host": "0.0.0.0",
-        "--port": 8080,
-        "--trust-remote-code": null,
-        "--no-enable-chunked-prefill": null,
-        "--no-enable-prefix-caching": null,
-        "--gpu-memory-utilization": 0.9,
-        "--max-model-len": 32768,
-        "-tp": 2,
-      },
-      vllm_bench_cfg: {
-        "--backend": "vllm",
-        "--host": "0.0.0.0",
-        "--port": 8080,
-        "--endpoint": "/v1/completions",
-        "--ignore-eos": null,
-        "--dataset-name": "random",
-        "--random-input-len": 2048,
-        "--random-output-len": 128,
-        "--max-concurrency": 32,
-        "--num-prompts": 64,
-        "--request-rate": "inf",
-      },
-      profiler_cfg: {
-        profiler: "torch",
-        torch_profiler_dir: "/app/VAP/log/vllm-profile",
-        torch_profiler_record_shapes: true,
-        torch_profiler_with_stack: false,
-        torch_profiler_with_memory: true,
-        torch_profiler_with_flops: false,
-        torch_profiler_use_gzip: true,
-        delay_iterations: 0,
-        max_iterations: 10,
-        tensorboard_port: 6006,
-      },
-      container_cfg: {
-        image_name: "mkmhub.amd.com/sw-cserocmopt-dev/release/wuxi_w7800/vllm0.16.0_pytorch2.9.1_rocm7.2",
-        image_tag: "20260311",
-        devices: [
-          "/dev/dri/renderD134",
-          "/dev/dri/renderD135",
-        ],
-        mounts: [
-          {
-            target: "/home/sylvan",
-            source: "/home/DomainUsers/syliu",
-          },
-          {
-            target: "/home/nfs_share/huggingface/",
-            source: "/home/nfs_share/huggingface/",
-          },
-        ],
-        env_vars: {
-          VLLM_USE_TRITON_FLASH_ATTN: "1",
-          PYTORCH_TUNABLEOP_ENABLED: "0",
-          PYTORCH_TUNABLEOP_TUNING: "0",
-          PYTORCH_TUNABLEOP_VERBOSE: "0",
-          PYTHONPATH: "/opt/rocm/lib",
-          NCCL_P2P_DISABLE: "1",
-          VLLM_WORKER_MULTIPROC_METHOD: "spawn",
-          VLLM_MLA_DISABLE: "1",
-          NCCL_DEBUG: "VERSION",
-        },
-      },
+    // example-config.json is loaded from the backend and becomes the only
+    // source of default values. This empty shape only keeps early UI code safe
+    // while the asynchronous config request is in flight.
+    let DEFAULT_CONFIG = {
+      model_cfg: {},
+      distributed_cfg: null,
+      vllm_deploy_cfg: {},
+      vllm_bench_cfg: {},
+      profiler_cfg: {},
+      container_cfg: {},
     };
-    const TORCH_PROFILER_DIR = DEFAULT_CONFIG.profiler_cfg.torch_profiler_dir;
+    let TORCH_PROFILER_DIR = "/app/VAP/log/vllm-profile";
 
     const toastEl = document.getElementById("toast");
     const validationModal = document.getElementById("validation-modal");
@@ -2048,6 +1983,7 @@
     const SPLITTER_WIDTH = 12;
     let statusTimer = null;
     let currentConfig = DEFAULT_CONFIG;
+    let currentConfigSource = null;
     let currentRunDir = null;
     let draftSaveTimer = null;
     let agentMessages = [];
@@ -2917,7 +2853,12 @@
 
     function saveConfigDraft() {
       try {
-        localStorage.setItem(CONFIG_DRAFT_KEY, JSON.stringify(buildConfig()));
+        if (!currentConfigSource) return;
+        localStorage.setItem(CONFIG_DRAFT_KEY, JSON.stringify({
+          source_path: currentConfigSource.path,
+          source_mtime_ns: currentConfigSource.mtime_ns,
+          config: buildConfig(),
+        }));
       } catch (error) {
         console.warn("Failed to save config draft", error);
       }
@@ -2932,7 +2873,15 @@
       const rawDraft = localStorage.getItem(CONFIG_DRAFT_KEY);
       if (!rawDraft) return false;
       try {
-        fillForm(JSON.parse(rawDraft));
+        const draft = JSON.parse(rawDraft);
+        const sourceMatches = currentConfigSource
+          && draft.source_path === currentConfigSource.path
+          && draft.source_mtime_ns === currentConfigSource.mtime_ns;
+        if (!sourceMatches || !draft.config) {
+          localStorage.removeItem(CONFIG_DRAFT_KEY);
+          return false;
+        }
+        fillForm(draft.config);
         showToast("Restored unsaved config draft");
         return true;
       } catch (error) {
@@ -3349,12 +3298,30 @@
       Object.entries(container.env_vars || {}).forEach(([key, value]) => addEnv(key, value));
     }
 
-    async function loadConfig() {
-      const response = await fetch("/api/config");
+    async function fetchConfig(source) {
+      const response = await fetch(`/api/config?source=${encodeURIComponent(source)}`);
       if (!response.ok) throw new Error(await response.text());
-      const data = await readJsonResponse(response, "Failed to load config");
+      return readJsonResponse(response, `Failed to load ${source} config`);
+    }
+
+    async function loadDefaultConfig() {
+      const data = await fetchConfig("example");
+      DEFAULT_CONFIG = data.config || data;
+      TORCH_PROFILER_DIR = DEFAULT_CONFIG.profiler_cfg?.torch_profiler_dir
+        || TORCH_PROFILER_DIR;
+    }
+
+    async function loadConfig(options = {}) {
+      await loadDefaultConfig();
+      const data = await fetchConfig("current");
+      currentConfigSource = {
+        path: data.path || "",
+        mtime_ns: data.mtime_ns || "",
+      };
       fillForm(data.config || data);
-      showToast("Config loaded");
+      if (!options.restoreDraft || !loadConfigDraft()) {
+        showToast("Config loaded");
+      }
     }
 
     async function reloadConfigFromFile() {
@@ -3465,7 +3432,16 @@
             if (blockedPorts.length) {
               throw new Error(blockedPorts.map((port) => port.message).join("\n"));
             }
-            return (data.ports || []).map((port) => `${port.name} ${port.port} is available`).join("; ") || "No ports need to be checked";
+            const portMessage = (data.ports || [])
+              .map((port) => `${port.name} ${port.port} is available`)
+              .join("; ") || "No ports need to be checked";
+            if (config.distributed_cfg) {
+              return {
+                status: "warning",
+                message: "Distributed mode unavailable; Ray port check skipped.\nOther local ports are available.",
+              };
+            }
+            return portMessage;
           },
         },
         {
@@ -3611,7 +3587,7 @@
               return {
                 status: "warning",
                 message: data.warnings
-                  .map((warning) => `${warning.path || "config"}: ${warning.message || warning}`)
+                  .map((warning) => `• ${warning.message || warning}`)
                   .join("\n"),
               };
             }
@@ -4061,12 +4037,10 @@
     loadAgentSession();
     restoreAgentPendingRequest();
     requestAnimationFrame(updateAgentScrollButton);
-    if (!loadConfigDraft()) {
-      loadConfig().catch((error) => {
-        showToast("Failed to load config: " + error.message, "error");
-        fillForm({});
-      });
-    }
+    loadConfig({ restoreDraft: true }).catch((error) => {
+      showToast("Failed to load config: " + error.message, "error");
+      fillForm({});
+    });
     pollStatus().catch((error) => showToast(error.message, "error"));
     loadAgentStatus().catch((error) => {
       setAgentUnlocked(false, "Unavailable");

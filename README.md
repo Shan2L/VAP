@@ -37,6 +37,24 @@ Make sure `~/.local/bin` is in `PATH` if `vap` is not found after installation.
 
 Make sure Docker is available and the configured image, model path, devices, and mounts exist on the host.
 
+## Uninstall
+
+Stop VAP, then run:
+
+```bash
+bash uninstall.sh
+```
+
+The default uninstall removes VAP executables, its virtual environment, downloaded tools, and caches while preserving `~/.vap/config.json` and `~/.vap/logs/`.
+
+To remove all VAP runtime data and the managed bootstrap source checkout:
+
+```bash
+bash uninstall.sh --purge --remove-source
+```
+
+Use `--yes` for non-interactive environments. Custom `VAP_HOME` and `VAP_SOURCE_DIR` values should be supplied to the uninstaller in the same way they were supplied during installation.
+
 ## Start the UI
 
 Run the local control server:
@@ -88,7 +106,7 @@ The deploy and benchmark `--host` / `--port` values should stay consistent. The 
 
 `profiler_cfg.tensorboard_port` controls TensorBoard. Perfetto Trace Processor is fixed to local port `9001` so `https://ui.perfetto.dev/` can discover it through the standard local endpoint.
 
-Configuration is strict: unknown fields, invalid ports, mismatched deploy/benchmark endpoints, unsafe CLI values, and unsupported distributed settings are rejected by both the UI and CLI. Distributed execution is not implemented yet; set `distributed_cfg` to `null`.
+Configuration is strict: unknown fields, invalid ports, mismatched deploy/benchmark endpoints, and unsafe CLI values are rejected by both the UI and CLI. Distributed execution is not implemented yet; a present `distributed_cfg` produces a warning and VAP continues in local mode.
 
 VAP safely quotes deploy, benchmark, and profiler arguments before invoking the fixed shell wrapper used for log redirection.
 

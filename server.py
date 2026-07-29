@@ -171,16 +171,6 @@ def check_config_ports(payload: dict[str, Any]) -> dict[str, Any]:
             "available": is_local_port_available(PERFETTO_PORT),
         },
     ]
-    if config.distributed_cfg is not None:
-        ray_port = config.distributed_cfg.ray_port
-        ports.append(
-            {
-                "name": "Ray distributed port",
-                "port": ray_port,
-                "available": is_local_port_available(ray_port),
-            }
-        )
-
     for item in ports:
         item["message"] = (
             f"Local port {item['port']} is available"
@@ -1857,11 +1847,24 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
     def handle_get_config(self, query: str) -> None:
         try:
             params = parse_qs(query)
-            raw_path = params.get("path", [None])[0]
-            config_path = resolve_config_path(raw_path)
+            source = params.get("source", ["current"])[0]
+            if source == "example":
+                config_path = DEFAULT_CONFIG_PATH
+            elif source == "current":
+                raw_path = params.get("path", [None])[0]
+                config_path = resolve_config_path(raw_path)
+            else:
+                raise ValueError("Config source must be 'current' or 'example'")
+
             with config_path.open("r", encoding="utf-8") as config_file:
                 payload = json.load(config_file)
-            self.send_json({"path": str(config_path), "config": payload})
+            self.send_json(
+                {
+                    "path": str(config_path),
+                    "mtime_ns": str(config_path.stat().st_mtime_ns),
+                    "config": payload,
+                }
+            )
         except Exception as exc:
             self.send_json(
                 {"message": f"Failed to read config: {exc}"}, HTTPStatus.BAD_REQUEST

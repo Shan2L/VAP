@@ -550,15 +550,15 @@ def run(args, log_dir: str):
 
     logger.info("VAP started")
 
-    # 1. resource validation
-    # 1.1. machine connection
+    # Distributed execution is not implemented yet. Keep the config visible so
+    # users can prepare it, but run the supported local workflow for now.
     if config.distributed_cfg is not None:
-        for node in config.distributed_cfg.worker_nodes:
-            if not is_machine_connected(node):
-                logger.error(f"Machine {node} is not connected")
-                raise Exception(f"Machine {node} is not connected")
-            logger.info(f"Machine {node} is connected")
+        logger.warning(
+            "distributed_cfg is present but distributed execution is not "
+            "supported yet; continuing with a local run"
+        )
 
+    # 1. resource validation
     # 1.2. port availability
     check_port_availability(config)
     # 1.3. model weight availability
@@ -567,18 +567,6 @@ def run(args, log_dir: str):
         raise Exception(f"Model weight {config.model_path} is not available")
     logger.info(f"Model weight {config.model_path} is available")
 
-    if config.distributed_cfg is not None:
-        for node in config.distributed_cfg.worker_nodes:
-            if not check_remote_assets(node, config.model_path):
-                logger.error(
-                    f"Model weight {config.model_path} is not available on machine {node}"
-                )
-                raise Exception(
-                    f"Model weight {config.model_path} is not available on machine {node}"
-                )
-            logger.info(
-                f"Model weight {config.model_path} is available on machine {node}"
-            )
     # 1.4. image availability
     try:
         docker_client.images.get(config.docker_image)

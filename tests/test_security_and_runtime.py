@@ -114,7 +114,7 @@ class ConfigSecurityTests(unittest.TestCase):
             )
         )
 
-    def test_distributed_config_is_explicitly_rejected(self) -> None:
+    def test_distributed_config_is_reported_as_warning(self) -> None:
         payload = example_payload()
         payload["distributed_cfg"] = {
             "num_nodes": 2,
@@ -125,9 +125,9 @@ class ConfigSecurityTests(unittest.TestCase):
 
         result = validation.validate_config_payload(payload)
 
-        self.assertFalse(result["valid"])
+        self.assertTrue(result["valid"])
         self.assertTrue(
-            any(error["path"] == "distributed_cfg" for error in result["errors"])
+            any(warning["path"] == "distributed_cfg" for warning in result["warnings"])
         )
 
     def test_security_warnings_do_not_block_compatible_config(self) -> None:
