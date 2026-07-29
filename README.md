@@ -4,7 +4,7 @@
 
 VAP is a lightweight tool for deploying a vLLM service, running benchmark workloads, collecting profiler output, and viewing run logs through a simple web UI.
 
-For installation, configuration, UI/CLI workflows, security notes, and troubleshooting, see the [User Guide](USER_GUIDE.md).
+For day-to-day operation, see the [User Guide](USER_GUIDE.md). For a production-oriented installation guide, deployment topology, operating procedures, and architecture report, see [VAP Deployment and Technical Report](DEPLOYMENT_AND_TECHNICAL_REPORT.md).
 
 The project includes:
 
@@ -37,6 +37,16 @@ Make sure `~/.local/bin` is in `PATH` if `vap` is not found after installation.
 
 Make sure Docker is available and the configured image, model path, devices, and mounts exist on the host.
 
+## Commands
+
+The installer prints this command summary when it finishes:
+
+- `vap start [--host HOST] [--port PORT]` starts the Web UI and local control server.
+- `vap run [--config FILE] [--visualization-host HOST]` runs deployment, benchmark, profiling, and visualization directly from the CLI.
+- `vap clean [--logs-dir DIR]` removes generated logs from VAP's managed logs directory.
+- `vap uninstall [--purge] [--remove-source] [--yes]` removes the managed installation. Config and logs are preserved unless `--purge` is used.
+- `vap --help` lists commands. Run `vap <command> --help` for command-specific options.
+
 ## Uninstall
 
 Stop VAP, then run:
@@ -45,7 +55,7 @@ Stop VAP, then run:
 vap uninstall
 ```
 
-The default uninstall removes VAP executables, its virtual environment, downloaded tools, and caches while preserving `~/.vap/config.json` and `~/.vap/logs/`.
+The default uninstall removes the managed `~/.local/bin/vap` wrapper, VAP executables, its virtual environment, downloaded tools, and caches while preserving `~/.vap/config.json` and `~/.vap/logs/`.
 
 To remove all VAP runtime data and the managed bootstrap source checkout:
 

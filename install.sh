@@ -20,7 +20,7 @@ if [[ "$OS" != "Linux" || "$ARCH" != "x86_64" ]]; then
     exit 1
 fi
 
-for command in curl install mktemp sha256sum tar; do
+for command in curl grep install mktemp sha256sum tar; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command is not available: $command" >&2
         exit 1
@@ -99,13 +99,17 @@ if [[ -e "$VAP_WRAPPER" ]] && ! grep -Fq "$VENV_DIR/bin/vap" "$VAP_WRAPPER"; the
 fi
 cat > "$VAP_WRAPPER" <<EOF
 #!/usr/bin/env bash
+# VAP_MANAGED_WRAPPER=1
 VAP_HOME="\${VAP_HOME:-$VAP_HOME}" exec "$VENV_DIR/bin/vap" "\$@"
 EOF
 chmod +x "$VAP_WRAPPER"
 
 # Marker used by uninstall.sh to distinguish a managed VAP runtime directory
 # from an unrelated user directory.
-printf 'installed_from=%s\n' "$(pwd -P)" > "$VAP_HOME/.vap-installed"
+printf 'installed_from=%s\nwrapper=%s\nvenv=%s\n' \
+    "$(pwd -P)" \
+    "$VAP_WRAPPER" \
+    "$VENV_DIR" > "$VAP_HOME/.vap-installed"
 chmod 0600 "$VAP_HOME/.vap-installed"
 
 echo "VAP installed successfully."
@@ -116,5 +120,18 @@ if [[ ":$PATH:" == *":$USER_BIN_DIR:"* ]]; then
 else
     echo "Add $USER_BIN_DIR to PATH:"
     echo "  export PATH=\"$USER_BIN_DIR:\$PATH\""
-    echo "Then run: vap start"
+    echo
 fi
+
+echo
+echo "Available commands:"
+echo "  vap start [--host HOST] [--port PORT]"
+echo "      Start the Web UI and local control server."
+echo "  vap run [--config FILE] [--visualization-host HOST]"
+echo "      Run deployment, benchmark, profiling, and visualization from the CLI."
+echo "  vap clean [--logs-dir DIR]"
+echo "      Remove generated VAP logs from the managed logs directory."
+echo "  vap uninstall [--purge] [--remove-source] [--yes]"
+echo "      Uninstall VAP; config and logs are preserved unless --purge is used."
+echo "  vap --help"
+echo "      Show the command list; use 'vap <command> --help' for options."

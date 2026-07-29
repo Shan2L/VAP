@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shlex
 import stat
+import subprocess
 import sys
 import tempfile
 import types
@@ -365,6 +367,82 @@ class RuntimeAndCliTests(unittest.TestCase):
             ],
         )
         ensure_vap_home.assert_not_called()
+
+    def test_uninstall_removes_legacy_managed_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            vap_home = home / ".vap"
+            venv_vap = vap_home / "venv" / "bin" / "vap"
+            wrapper = home / ".local" / "bin" / "vap"
+            venv_vap.parent.mkdir(parents=True)
+            wrapper.parent.mkdir(parents=True)
+            (vap_home / "logs").mkdir()
+            (vap_home / "config.json").write_text("{}\n", encoding="utf-8")
+            (vap_home / ".vap-installed").write_text(
+                "installed_from=/source\n", encoding="utf-8"
+            )
+            venv_vap.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            venv_vap.chmod(0o755)
+            wrapper.write_text(
+                f'#!/usr/bin/env bash\nexec "{venv_vap}" "$@"\n',
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "VAP_HOME": str(vap_home),
+                "XDG_DATA_HOME": str(home / ".local" / "share"),
+            }
+
+            result = subprocess.run(
+                ["bash", str(PROJECT_ROOT / "uninstall.sh"), "--yes"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(wrapper.exists())
+            self.assertFalse((vap_home / "venv").exists())
+            self.assertFalse((vap_home / ".vap-installed").exists())
+            self.assertTrue((vap_home / "config.json").exists())
+            self.assertTrue((vap_home / "logs").exists())
+            self.assertIn("Removed command:", result.stdout)
+
+    def test_uninstall_preserves_unmanaged_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            vap_home = home / ".vap"
+            wrapper = home / ".local" / "bin" / "vap"
+            wrapper.parent.mkdir(parents=True)
+            vap_home.mkdir(parents=True)
+            (vap_home / ".vap-installed").write_text(
+                "installed_from=/source\n", encoding="utf-8"
+            )
+            wrapper.write_text(
+                "#!/usr/bin/env bash\necho unrelated\n", encoding="utf-8"
+            )
+            wrapper.chmod(0o755)
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "VAP_HOME": str(vap_home),
+                "XDG_DATA_HOME": str(home / ".local" / "share"),
+            }
+
+            result = subprocess.run(
+                ["bash", str(PROJECT_ROOT / "uninstall.sh"), "--yes"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(wrapper.exists())
+            self.assertIn("Keeping unmanaged command:", result.stderr)
 
     def test_clean_refuses_non_vap_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

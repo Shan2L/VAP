@@ -82,6 +82,17 @@ export PATH="$HOME/.local/bin:$PATH"
 
 You can add this line to `~/.bashrc`.
 
+### Installed Commands
+
+The installer prints the available commands when installation finishes:
+
+- `vap start [--host HOST] [--port PORT]` starts the Web UI and local control server.
+- `vap run [--config FILE] [--visualization-host HOST]` runs deployment, benchmark, profiling, and visualization without the Web UI.
+- `vap clean [--logs-dir DIR]` removes generated VAP logs. It refuses arbitrary filesystem paths.
+- `vap uninstall [--purge] [--remove-source] [--yes]` removes the managed installation. By default it preserves config and logs.
+- `vap --help` displays the command list.
+- `vap <command> --help` displays options for one command.
+
 ### Development Mode
 
 To run directly from the source directory without using the installation script:
@@ -476,6 +487,25 @@ Alternatively, use development mode:
 uv run --no-sync vap start
 ```
 
+### `vap` Still Appears After Uninstall
+
+The default uninstaller removes the managed `~/.local/bin/vap` wrapper. First
+clear Bash's command cache and inspect every matching command:
+
+```bash
+hash -r
+type -a vap
+```
+
+The uninstaller prints one of `Removed command`, `Command already absent`, or
+`Keeping unmanaged command`. An unmanaged command is deliberately preserved.
+If an interrupted older uninstall left a managed wrapper behind, run the
+fallback from the managed source checkout:
+
+```bash
+bash ~/.local/share/vap/source/uninstall.sh --yes
+```
+
 ### `uv run` Produces No Output for a Long Time
 
 The first run may be synchronizing dependencies. Run the commands separately to
@@ -605,9 +635,10 @@ In development mode:
 uv pip install --python .venv/bin/python -e .
 ```
 
-Stop VAP before uninstalling. The default command removes VAP executables,
-the virtual environment, downloaded tools, and caches while preserving
-`~/.vap/config.json` and `~/.vap/logs/`:
+Stop VAP before uninstalling. The default command removes the managed
+`~/.local/bin/vap` wrapper, VAP executables, the virtual environment,
+downloaded tools, and caches while preserving `~/.vap/config.json` and
+`~/.vap/logs/`:
 
 ```bash
 vap uninstall

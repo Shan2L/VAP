@@ -66,6 +66,18 @@ DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 SOURCE_DIR="$(realpath -m "${VAP_SOURCE_DIR:-$DATA_HOME/vap/source}")"
 EXPECTED_REPO_URL="https://github.com/Shan2L/VAP.git"
 
+wrapper_is_managed() {
+    if [[ -L "$VAP_WRAPPER" ]]; then
+        [[ "$(realpath -m "$VAP_WRAPPER")" == "$VENV_DIR/bin/vap" ]]
+        return
+    fi
+    if [[ ! -f "$VAP_WRAPPER" ]]; then
+        return 1
+    fi
+    grep -Fq "# VAP_MANAGED_WRAPPER=1" "$VAP_WRAPPER" \
+        || grep -Fq "$VENV_DIR/bin/vap" "$VAP_WRAPPER"
+}
+
 # Never allow an empty value, /, or the user's entire home directory to become
 # an rm -rf target because of an environment-variable mistake.
 case "$VAP_HOME" in
@@ -84,8 +96,12 @@ if [[ "$REMOVE_SOURCE" -eq 1 ]]; then
 fi
 
 # New installations have a marker. The executable check keeps the uninstaller
-# compatible with installations made before the marker was introduced.
-if [[ ! -f "$INSTALL_MARKER" && ! -x "$VENV_DIR/bin/vap" ]]; then
+# compatible with installations made before the marker was introduced. A
+# managed wrapper check also lets a repeated uninstall clean up a wrapper left
+# by an interrupted older uninstall.
+if [[ ! -f "$INSTALL_MARKER" ]] \
+    && [[ ! -x "$VENV_DIR/bin/vap" ]] \
+    && ! wrapper_is_managed; then
     echo "No managed VAP installation found at $VAP_HOME" >&2
     exit 1
 fi
@@ -122,17 +138,22 @@ if [[ "$ASSUME_YES" -ne 1 ]]; then
     esac
 fi
 
-# Delete the command only when it is the wrapper managed by install.sh.
-if [[ -e "$VAP_WRAPPER" ]]; then
-    if grep -Fq "$VENV_DIR/bin/vap" "$VAP_WRAPPER"; then
+# Delete the command only when it is the wrapper managed by install.sh. Include
+# broken symlinks so older installations can still be cleaned up.
+if [[ -e "$VAP_WRAPPER" || -L "$VAP_WRAPPER" ]]; then
+    if wrapper_is_managed; then
         rm -f "$VAP_WRAPPER"
+        echo "Removed command: $VAP_WRAPPER"
     else
         echo "Keeping unmanaged command: $VAP_WRAPPER" >&2
     fi
+else
+    echo "Command already absent: $VAP_WRAPPER"
 fi
 
 if [[ "$PURGE" -eq 1 ]]; then
     rm -rf "$VAP_HOME"
+    echo "Removed runtime: $VAP_HOME"
 else
     rm -rf \
         "$VAP_HOME/bin" \
@@ -141,6 +162,7 @@ else
         "$VAP_HOME/tmp" \
         "$VAP_HOME/uv-python" \
         "$VAP_HOME/venv"
+    rm -f "$INSTALL_MARKER"
     echo "Preserved: $VAP_HOME/config.json"
     echo "Preserved: $VAP_HOME/logs/"
 fi
@@ -156,6 +178,7 @@ if [[ "$REMOVE_SOURCE" -eq 1 ]]; then
         exit 1
     else
         rm -rf "$SOURCE_DIR"
+        echo "Removed managed source: $SOURCE_DIR"
     fi
 fi
 
