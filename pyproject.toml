@@ -14,5 +14,11 @@ dependencies = [
 [tool.setuptools]
 py-modules = ["agent_runtime", "cli", "config", "main", "runtime_paths", "server", "trace_fusion", "validation"]
 
+[dependency-groups]
+docs = [
+    "mkdocs-gen-files>=0.6.1",
+    "mkdocs-material>=9.7.7",
+]
+
 [project.scripts]
 vap = "cli:main"

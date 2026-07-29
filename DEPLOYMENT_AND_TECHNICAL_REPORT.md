@@ -1,81 +1,81 @@
-# VAP 部署、使用与技术报告
+# VAP Deployment, Operations, and Technical Report
 
-## 1. 文档目的
+## 1. Purpose of This Document
 
-本文档面向 VAP 的部署人员、使用人员和维护人员，覆盖：
+This document is intended for personnel who deploy, operate, and maintain VAP. It covers:
 
-- 生产可用的本地部署方式；
-- 安装、升级、启动、使用、清理和卸载命令；
-- 配置文件与运行产物说明；
-- 系统架构、执行流程、技术选型和安全设计；
-- 当前限制、故障排查和上线验收清单。
+- A production-ready local deployment approach;
+- Commands for installation, upgrades, startup, operation, cleanup, and uninstallation;
+- Configuration files and runtime artifacts;
+- System architecture, execution flow, technology choices, and security design;
+- Current limitations, troubleshooting guidance, and a production-readiness checklist.
 
-VAP 用于自动完成 vLLM 服务部署、Benchmark、Torch Profiler 数据采集、Trace 合并以及 TensorBoard/Perfetto 可视化。
+VAP automates vLLM service deployment, benchmarking, Torch Profiler data collection, trace merging, and visualization with TensorBoard and Perfetto.
 
-当前推荐将 VAP 部署为**受信任用户使用的本地运维工具**，服务监听 `127.0.0.1`，远程访问通过 SSH Tunnel 完成。不要直接暴露到公网。
+The current recommendation is to deploy VAP as a **local operations tool for trusted users**, with the service listening on `127.0.0.1` and remote access provided through an SSH tunnel. Do not expose it directly to the public internet.
 
 ---
 
-## 2. 系统架构
+## 2. System Architecture
 
 ```mermaid
 flowchart LR
-    Operator[用户] --> CLI[vap CLI]
+    Operator[User] --> CLI[vap CLI]
     Operator --> UI[Web UI]
-    CLI --> Server[本地控制服务]
+    CLI --> Server[Local Control Service]
     UI --> Server
-    Server --> Validation[Pydantic 与资源校验]
-    Server --> TempConfig[临时运行配置]
-    Server --> Workflow[工作流进程 main.py]
+    Server --> Validation[Pydantic and Resource Validation]
+    Server --> TempConfig[Temporary Run Configuration]
+    Server --> Workflow[Workflow Process main.py]
     Workflow --> Docker[Docker Engine]
-    Docker --> VLLM[vLLM 容器]
+    Docker --> VLLM[vLLM Container]
     Workflow --> Benchmark[vLLM Benchmark]
     VLLM --> Traces[Torch Profiler Traces]
     Traces --> Fusion[Trace Fusion]
     Fusion --> TensorBoard[TensorBoard]
     Fusion --> Perfetto[Perfetto Trace Processor]
-    UI --> Agent[可选 Agent Runtime]
+    UI --> Agent[Optional Agent Runtime]
     Agent --> Server
 ```
 
-核心组件：
+Core components:
 
-- `cli.py`：提供 `vap start/run/clean/uninstall` 命令。
-- `server.py`：本地 HTTP 控制服务、Web UI、认证、运行状态和 Agent 工具注册。
-- `public/index.html`：配置编辑、校验、运行控制、日志与可视化入口。
-- `config.py`：严格 Pydantic 配置模型。
-- `validation.py`：端口、参数、安全边界和兼容性校验。
-- `main.py`：Docker、vLLM、Benchmark、Profiler 和可视化工作流。
-- `trace_fusion.py`：多 rank PyTorch Trace 合并。
-- `agent_runtime.py`：可选 LLM Agent 及审批工具。
-- `skills/TorchProfilerTraceSkill/`：基于 Perfetto SQL 的 Trace 分析能力。
+- `cli.py`: Provides the `vap start/run/clean/uninstall` commands.
+- `server.py`: Implements the local HTTP control service, Web UI, authentication, run status management, and Agent tool registration.
+- `public/index.html`: Provides configuration editing and validation, run controls, logs, and visualization entry points.
+- `config.py`: Defines strict Pydantic configuration models.
+- `validation.py`: Validates ports, parameters, security boundaries, and compatibility.
+- `main.py`: Implements the Docker, vLLM, benchmark, profiler, and visualization workflow.
+- `trace_fusion.py`: Merges multi-rank PyTorch traces.
+- `agent_runtime.py`: Implements the optional LLM Agent and approval tools.
+- `skills/TorchProfilerTraceSkill/`: Provides trace analysis capabilities based on Perfetto SQL.
 
 ---
 
-## 3. 部署要求
+## 3. Deployment Requirements
 
-### 3.1 支持环境
+### 3.1 Supported Environment
 
-自动安装器当前支持：
+The automated installer currently supports:
 
-- Linux x86_64；
-- 可访问 Docker daemon；
-- 可访问配置中的 Docker 镜像和模型目录；
-- AMD ROCm GPU 环境；
-- 用户具备目标设备与挂载目录的访问权限。
+- Linux x86_64;
+- Access to the Docker daemon;
+- Access to the Docker image and model directories specified in the configuration;
+- An AMD ROCm GPU environment;
+- User permissions for the target devices and mount directories.
 
-安装器会自行安装：
+The installer installs the following components:
 
-- Python 3.12 虚拟环境；
-- 固定版本并校验 SHA256 的 `uv`；
-- VAP Python 依赖；
-- 固定版本并校验 SHA256 的 Perfetto Trace Processor。
+- A Python 3.12 virtual environment;
+- A pinned version of `uv`, verified by SHA256 checksum;
+- VAP Python dependencies;
+- A pinned version of the Perfetto Trace Processor, verified by SHA256 checksum.
 
-Bootstrap 额外依赖 `git`。项目安装器需要 `curl`、`install`、`mktemp`、`sha256sum`、`tar` 和 `grep`。
+Bootstrap additionally requires `git`. The project installer requires `curl`, `install`, `mktemp`, `sha256sum`, `tar`, and `grep`.
 
-### 3.2 Docker 检查
+### 3.2 Docker Checks
 
-部署前确认：
+Before deployment, verify the following:
 
 ```bash
 docker info
@@ -83,43 +83,43 @@ docker images
 ls -l /dev/kfd /dev/dri/
 ```
 
-VAP 容器当前使用 host network、host IPC、ROCm 设备、`SYS_ADMIN`、`SYS_PTRACE` 和 `seccomp=unconfined`。这些配置用于性能分析，只应运行可信镜像、模型和配置。
+VAP containers currently use host networking, host IPC, ROCm devices, `SYS_ADMIN`, `SYS_PTRACE`, and `seccomp=unconfined`. These settings are required for performance analysis; only trusted images, models, and configurations should be used.
 
-### 3.3 网络端口
+### 3.3 Network Ports
 
-默认或常用端口：
+Default or commonly used ports:
 
-- VAP Web UI：`8899`
-- vLLM：由 `vllm_deploy_cfg.--port` 配置
-- TensorBoard：由 `profiler_cfg.tensorboard_port` 配置，默认 `6006`
-- Perfetto Trace Processor：固定 `9001`
+- VAP Web UI: `8899`
+- vLLM: Configured by `vllm_deploy_cfg.--port`
+- TensorBoard: Configured by `profiler_cfg.tensorboard_port`; default: `6006`
+- Perfetto Trace Processor: Fixed at `9001`
 
 ---
 
-## 4. 安装与升级
+## 4. Installation and Upgrades
 
-### 4.1 Bootstrap 安装
+### 4.1 Bootstrap Installation
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash
 ```
 
-安装指定分支或 Tag：
+To install a specific branch or tag:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh \
   | VAP_REF=<branch-or-tag> bash
 ```
 
-Bootstrap 会将受管理源码安装到：
+Bootstrap installs the managed source tree at:
 
 ```text
 ${XDG_DATA_HOME:-~/.local/share}/vap/source
 ```
 
-随后执行项目中的 `install.sh`。
+It then executes the project's `install.sh`.
 
-### 4.2 从源码安装
+### 4.2 Installation from Source
 
 ```bash
 git clone https://github.com/Shan2L/VAP.git
@@ -127,15 +127,15 @@ cd VAP
 bash install.sh
 ```
 
-### 4.3 自定义安装目录
+### 4.3 Custom Installation Directories
 
-源码安装只需设置运行目录：
+For installation from source, set the runtime directory:
 
 ```bash
 VAP_HOME=/path/to/vap-runtime bash install.sh
 ```
 
-Bootstrap 安装可同时设置源码与运行目录：
+For Bootstrap installation, both the source and runtime directories can be set:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh \
@@ -144,15 +144,15 @@ curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh \
     bash
 ```
 
-默认运行目录为 `~/.vap`，命令入口为 `~/.local/bin/vap`。
+The default runtime directory is `~/.vap`, and the command entry point is `~/.local/bin/vap`.
 
-确保命令目录在 `PATH` 中：
+Ensure that the command directory is included in `PATH`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### 4.4 安装验证
+### 4.4 Installation Verification
 
 ```bash
 vap --help
@@ -160,148 +160,148 @@ vap start --help
 vap uninstall --help
 ```
 
-### 4.5 升级
+### 4.5 Upgrades
 
-Bootstrap 安装可重新执行安装命令：
+For a Bootstrap installation, rerun the installation command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash
 ```
 
-源码安装可更新代码后重新运行：
+For an installation from source, update the code and rerun the installer:
 
 ```bash
 git pull
 bash install.sh
 ```
 
-升级会保留已有的 `~/.vap/config.json` 和运行日志。
+Upgrades preserve the existing `~/.vap/config.json` and run logs.
 
 ---
 
-## 5. 配置管理
+## 5. Configuration Management
 
-### 5.1 配置来源
+### 5.1 Configuration Sources
 
-VAP 使用以下配置层次：
+VAP uses the following configuration precedence:
 
-1. `example-config.json`：唯一默认配置模板；
-2. `~/.vap/config.json`：用户当前配置，存在时覆盖默认模板；
-3. 浏览器 localStorage 草稿：仅在来源文件和修改版本匹配时恢复；
-4. UI 启动任务时生成的临时配置：位于 `~/.vap/tmp/configs/`；
-5. `vap run --config`：CLI 显式指定的配置。
+1. `example-config.json`: The sole default configuration template;
+2. `~/.vap/config.json`: The user's current configuration, which overrides the default template when present;
+3. A browser localStorage draft: Restored only when its source file and revision match;
+4. A temporary configuration generated when a task is started from the UI: Stored in `~/.vap/tmp/configs/`;
+5. `vap run --config`: A configuration explicitly specified through the CLI.
 
-修改 `example-config.json` 后，前端会通过 `/api/config?source=example` 获取最新默认值。旧浏览器草稿在来源文件变化后自动失效。
+After `example-config.json` is modified, the frontend retrieves the latest defaults through `/api/config?source=example`. Existing browser drafts are automatically invalidated when the source file changes.
 
-### 5.2 主要配置段
+### 5.2 Primary Configuration Sections
 
 `model_cfg`
 
-- `model_name`：模型名称或相对模型路径。
-- `model_path`：宿主机模型根目录。
+- `model_name`: Model name or relative model path.
+- `model_path`: Root model directory on the host.
 
 `vllm_deploy_cfg`
 
-- vLLM Serve 参数。
-- `--host` 和 `--port` 必须与 Benchmark 保持一致。
-- `--trust-remote-code` 会触发安全提示。
+- vLLM Serve parameters.
+- `--host` and `--port` must match the benchmark configuration.
+- `--trust-remote-code` triggers a security warning.
 
 `vllm_bench_cfg`
 
-- `vllm bench serve` 参数。
-- 包括 endpoint、数据集、输入输出长度、并发和请求速率。
+- `vllm bench serve` parameters.
+- Includes the endpoint, dataset, input and output lengths, concurrency, and request rate.
 
 `profiler_cfg`
 
-- Torch Profiler 开关与采集参数。
-- `torch_profiler_dir` 固定为 `/app/VAP/log/vllm-profile`。
-- `tensorboard_port` 配置 TensorBoard 端口。
+- Torch Profiler enablement and collection parameters.
+- `torch_profiler_dir` is fixed at `/app/VAP/log/vllm-profile`.
+- `tensorboard_port` configures the TensorBoard port.
 
 `container_cfg`
 
-- Docker 镜像名称和 Tag；
-- GPU 设备；
-- 宿主机挂载；
-- 环境变量。
+- Docker image name and tag;
+- GPU devices;
+- Host mounts;
+- Environment variables.
 
 `distributed_cfg`
 
-- 当前保留用于未来分布式支持；
-- 现阶段会显示黄色 Warning；
-- Ray 端口和远端节点不会执行；
-- VAP 会继续按本地单机模式运行。
+- Currently reserved for future distributed support;
+- Displays a yellow warning at this stage;
+- Ray ports and remote nodes are not used;
+- VAP continues to run in local, single-host mode.
 
-### 5.3 配置校验
+### 5.3 Configuration Validation
 
-VAP 在运行前检查：
+Before a run, VAP checks:
 
-- Pydantic 模型结构；
-- 必填字段和未知字段；
-- 端口范围与占用；
-- Deploy/Benchmark Host 和 Port 一致性；
-- Docker 镜像、模型目录、设备和挂载路径；
-- Tensor Parallel 与可见 GPU 数量；
-- Shell 不安全字符；
-- 固定 Profiler 目录；
-- 高权限容器配置和 `--trust-remote-code` Warning。
+- The Pydantic model structure;
+- Required and unknown fields;
+- Port ranges and availability;
+- Consistency of deployment and benchmark hosts and ports;
+- The Docker image, model directories, devices, and mount paths;
+- Tensor parallelism against the number of visible GPUs;
+- Shell-unsafe characters;
+- The fixed profiler directory;
+- Privileged container settings and the `--trust-remote-code` warning.
 
 ---
 
-## 6. 使用方法
+## 6. Usage
 
-### 6.1 启动 Web UI
+### 6.1 Starting the Web UI
 
 ```bash
 vap start
 ```
 
-等价于：
+This is equivalent to:
 
 ```bash
 vap start --host 127.0.0.1 --port 8899
 ```
 
-服务启动后会输出带一次性启动 Token 的 URL：
+After startup, the service prints a URL containing a one-time startup token:
 
 ```text
 Open VAP with this session URL: http://127.0.0.1:8899/?token=...
 ```
 
-首次访问后，Token 会写入 `SameSite=Strict` Cookie，并从浏览器地址栏移除。
+After the first access, the token is stored in a `SameSite=Strict` cookie and removed from the browser's address bar.
 
-### 6.2 远程访问
+### 6.2 Remote Access
 
-推荐保持 VAP 监听本机地址，通过 SSH Tunnel 访问：
+Keep VAP bound to the loopback address and access it through an SSH tunnel:
 
 ```bash
 ssh -L 8899:127.0.0.1:8899 user@vap-host
 ```
 
-随后在本地浏览器打开 VAP 输出的 URL。
+Then open the URL printed by VAP in a local browser.
 
-不建议直接使用：
+Directly using the following command is not recommended:
 
 ```bash
 vap start --host 0.0.0.0
 ```
 
-该方式会将服务暴露到所有网卡，但 VAP 本身不提供 TLS，也不应替代正式身份认证网关。
+This exposes the service on every network interface. VAP does not provide TLS and must not be used as a substitute for a production authentication gateway.
 
-### 6.3 Web UI 工作流
+### 6.3 Web UI Workflow
 
-1. 打开启动日志中的 Token URL。
-2. 检查或修改模型、镜像、GPU、挂载、vLLM 和 Profiler 配置。
-3. 点击 Validate。
-4. 查看端口、资源和 Backend Validation 结果。
-5. 确认黄色 Warning。
-6. 点击 Run 并确认执行。
-7. 查看 `vap_log.txt`、部署日志和 Benchmark 日志。
-8. 运行结束后打开 TensorBoard 或 Perfetto。
-9. 下载 Profile Trace 归档。
+1. Open the tokenized URL from the startup log.
+2. Review or modify the model, image, GPU, mount, vLLM, and profiler configuration.
+3. Click Validate.
+4. Review the port, resource, and backend validation results.
+5. Acknowledge any yellow warnings.
+6. Click Run and confirm execution.
+7. Review `vap_log.txt`, the deployment log, and the benchmark log.
+8. After the run completes, open TensorBoard or Perfetto.
+9. Download the profile trace archive.
 
-UI 不会在 Run 时覆盖 `~/.vap/config.json`，而是创建权限为 `0600` 的临时配置。
+When Run is selected, the UI does not overwrite `~/.vap/config.json`; instead, it creates a temporary configuration with `0600` permissions.
 
-### 6.4 CLI 运行
+### 6.4 Running from the CLI
 
 ```bash
 vap run \
@@ -309,11 +309,11 @@ vap run \
   --visualization-host 127.0.0.1
 ```
 
-CLI 执行完整工作流，并在 Benchmark 完成后启动可视化进程。
+The CLI executes the complete workflow and starts the visualization processes after the benchmark completes.
 
-### 6.5 Agent 功能
+### 6.5 Agent Functionality
 
-Agent 是可选功能。启动前设置：
+The Agent is optional. Set the following variables before startup:
 
 ```bash
 export VAP_LLM_SUBSCRIPTION_KEY="..."
@@ -323,57 +323,57 @@ export VAP_AGENT_MAX_TOOL_ROUNDS=8
 vap start
 ```
 
-Agent 可读取配置、日志、运行状态和 Trace 分析结果。启动或停止任务等写操作必须经过用户审批。
+The Agent can read configurations, logs, run status, and trace-analysis results. Mutating operations, such as starting or stopping a task, require user approval.
 
-### 6.6 清理日志
+### 6.6 Cleaning Logs
 
 ```bash
 vap clean
 ```
 
-也可以显式指定 VAP 日志目录：
+The VAP log directory can also be specified explicitly:
 
 ```bash
 vap clean --logs-dir ~/.vap/logs
 ```
 
-清理函数会拒绝删除不属于 VAP 的任意目录。
+The cleanup function refuses to delete any directory that does not belong to VAP.
 
-### 6.7 卸载
+### 6.7 Uninstallation
 
-默认卸载保留配置和日志：
+By default, uninstallation preserves configurations and logs:
 
 ```bash
 vap uninstall
 ```
 
-完整删除运行数据：
+To delete all runtime data:
 
 ```bash
 vap uninstall --purge
 ```
 
-同时删除 Bootstrap 管理的源码：
+To also remove the Bootstrap-managed source tree:
 
 ```bash
 vap uninstall --purge --remove-source
 ```
 
-非交互环境：
+For non-interactive environments:
 
 ```bash
 vap uninstall --purge --remove-source --yes
 ```
 
-卸载前必须停止正在运行的 VAP。
+VAP must be stopped before uninstallation.
 
 ---
 
-## 7. 可选 systemd 用户服务
+## 7. Optional systemd User Service
 
-对于固定工作站，可以使用 systemd User Service 管理 Web UI。
+On a dedicated workstation, the Web UI can be managed with a systemd user service.
 
-创建 `~/.config/systemd/user/vap.service`：
+Create `~/.config/systemd/user/vap.service`:
 
 ```ini
 [Unit]
@@ -391,7 +391,7 @@ RestartSec=3
 WantedBy=default.target
 ```
 
-启用服务：
+Enable the service:
 
 ```bash
 systemctl --user daemon-reload
@@ -399,47 +399,47 @@ systemctl --user enable --now vap
 systemctl --user status vap
 ```
 
-查看启动 Token：
+View the startup token:
 
 ```bash
 journalctl --user -u vap -n 50 --no-pager
 ```
 
-如需用户退出登录后继续运行：
+To keep the service running after the user logs out:
 
 ```bash
 loginctl enable-linger "$USER"
 ```
 
-该命令可能需要管理员权限。
+This command may require administrator privileges.
 
 ---
 
-## 8. 运行产物
+## 8. Runtime Artifacts
 
-默认运行根目录：
+Default run root directory:
 
 ```text
 ~/.vap/logs/<YYYYMMDD_HHMMSS>/
 ```
 
-常见文件：
+Common files:
 
-- `config.json`：本次运行配置副本；
-- `vap_log.txt`：VAP 工作流日志；
-- `vllm_deploy.log`：vLLM 启动日志；
-- `vllm_bench.log`：Benchmark 日志；
-- `vllm-profile/`：Profiler 原始数据；
-- `*-merged_trace.json.gz`：多 Rank Trace 合并结果；
-- `visualization_pids.json`：可视化进程 PID。
+- `config.json`: A copy of the configuration for this run;
+- `vap_log.txt`: VAP workflow log;
+- `vllm_deploy.log`: vLLM startup log;
+- `vllm_bench.log`: Benchmark log;
+- `vllm-profile/`: Raw profiler data;
+- `*-merged_trace.json.gz`: Merged multi-rank trace output;
+- `visualization_pids.json`: Visualization process IDs.
 
-临时配置：
+Temporary configurations:
 
 ```text
 ~/.vap/tmp/configs/
 ```
 
-工具和缓存：
+Tools and caches:
 
 ```text
 ~/.vap/bin/
@@ -450,76 +450,76 @@ loginctl enable-linger "$USER"
 
 ---
 
-## 9. 技术报告
+## 9. Technical Report
 
-### 9.1 技术目标
+### 9.1 Technical Objectives
 
-VAP 解决以下问题：
+VAP addresses the following needs:
 
-- 将 vLLM 部署、Benchmark 和 Profiler 串联为可重复工作流；
-- 降低 Torch Profiler 配置和 Trace 查找成本；
-- 为端口、路径、设备和 Docker 参数提供运行前校验；
-- 通过 Web UI 和 CLI 服务不同使用场景；
-- 将运行日志与配置归档到独立目录，提升可追溯性；
-- 提供 TensorBoard、Perfetto 和可选 Agent 分析入口。
+- Integrates vLLM deployment, benchmarking, and profiling into a repeatable workflow;
+- Reduces the effort required to configure Torch Profiler and locate traces;
+- Provides pre-run validation for ports, paths, devices, and Docker parameters;
+- Supports different operating scenarios through both a Web UI and CLI;
+- Archives run logs and configurations in separate directories to improve traceability;
+- Provides entry points for analysis with TensorBoard, Perfetto, and the optional Agent.
 
-### 9.2 技术选型
+### 9.2 Technology Choices
 
 Python 3.12
 
-- 作为控制面和工作流语言；
-- 标准库提供 HTTP、进程、文件和归档能力。
+- Used for the control plane and workflow implementation;
+- Its standard library provides HTTP, process, file, and archive capabilities.
 
 Pydantic
 
-- 严格配置模型；
-- 禁止未知字段；
-- 将结构错误提前到运行前。
+- Strict configuration models;
+- Unknown fields are prohibited;
+- Structural errors are detected before execution.
 
 Docker SDK for Python
 
-- 创建和管理 vLLM 容器；
-- 显式配置设备、挂载、IPC、网络、Capabilities 和环境变量。
+- Creates and manages vLLM containers;
+- Explicitly configures devices, mounts, IPC, networking, capabilities, and environment variables.
 
-原生 Web SPA
+Native Web SPA
 
-- 单文件 `public/index.html`；
-- 无额外前端构建工具；
-- 降低部署依赖和静态资源复杂度。
+- Implemented as the single file `public/index.html`;
+- Requires no additional frontend build tools;
+- Reduces deployment dependencies and static-asset complexity.
 
 Torch TensorBoard Profiler
 
-- 展示 PyTorch Profiler Trace；
-- 支持算子、Kernel 和时间线分析。
+- Displays PyTorch Profiler traces;
+- Supports operator, kernel, and timeline analysis.
 
 Perfetto Trace Processor
 
-- 提供 Trace SQL 查询；
-- 与 Perfetto Web UI 配合进行时间线分析。
+- Provides trace SQL queries;
+- Supports timeline analysis in conjunction with the Perfetto Web UI.
 
 OpenAI-Compatible Agent
 
-- 可选接入 AMD OpenAI-Compatible API；
-- 工具调用与 LLM 推理解耦；
-- 写操作需要显式审批。
+- Optionally integrates with the AMD OpenAI-compatible API;
+- Decouples tool invocation from LLM inference;
+- Mutating operations require explicit approval.
 
-### 9.3 配置数据流
+### 9.3 Configuration Data Flow
 
 ```text
 example-config.json
         │
-        ├── 前端默认配置
+        ├── Frontend default configuration
         │
 ~/.vap/config.json
         │
-        ├── 用户当前配置
+        ├── User's current configuration
         │
 Browser Draft
         │
-        └── 来源版本匹配时恢复
+        └── Restored when the source revision matches
                 │
                 ▼
-          UI 当前表单
+          Current UI form
                 │
                 ▼
 ~/.vap/tmp/configs/vap-config-*.json
@@ -528,108 +528,108 @@ Browser Draft
             main.py
 ```
 
-这种设计避免 Web UI 直接覆盖用户配置，同时保证每次运行有独立配置快照。
+This design prevents the Web UI from directly overwriting the user's configuration while ensuring that every run has an independent configuration snapshot.
 
-### 9.4 执行流程
+### 9.4 Execution Flow
 
-1. Server 接收运行请求并执行后端校验。
-2. Server 创建权限为 `0600` 的临时配置。
-3. Server 启动独立 Workflow 子进程。
-4. Workflow 创建运行日志目录并复制配置。
-5. Workflow 检查端口、模型、镜像和设备。
-6. Docker SDK 启动 vLLM 容器。
-7. Workflow 轮询 vLLM `/health`。
-8. Workflow 调用 `/start_profile`。
-9. 容器内执行 `vllm bench serve`。
-10. Workflow 在 `finally` 中调用 `/stop_profile`。
-11. Workflow 停止并删除容器。
-12. Trace Fusion 合并多 Rank Trace。
-13. 启动 TensorBoard 和 Perfetto Trace Processor。
+1. The Server receives a run request and performs backend validation.
+2. The Server creates a temporary configuration with `0600` permissions.
+3. The Server starts an independent Workflow subprocess.
+4. The Workflow creates the run log directory and copies the configuration.
+5. The Workflow checks ports, the model, the image, and devices.
+6. The Docker SDK starts the vLLM container.
+7. The Workflow polls the vLLM `/health` endpoint.
+8. The Workflow calls `/start_profile`.
+9. `vllm bench serve` runs inside the container.
+10. The Workflow calls `/stop_profile` from a `finally` block.
+11. The Workflow stops and removes the container.
+12. Trace Fusion merges traces from multiple ranks.
+13. TensorBoard and the Perfetto Trace Processor are started.
 
-### 9.5 安全模型
+### 9.5 Security Model
 
-HTTP 控制面：
+HTTP control plane:
 
-- 每次 Server 启动生成随机 Token；
-- Query Token 仅在根路径接受；
-- 认证后使用 `SameSite=Strict` Cookie；
-- 写请求要求 JSON；
-- 检查同源 Origin；
-- 默认监听 `127.0.0.1`。
+- A random token is generated each time the Server starts;
+- A query-string token is accepted only on the root path;
+- A `SameSite=Strict` cookie is used after authentication;
+- Mutating requests must use JSON;
+- Same-origin `Origin` checks are enforced;
+- The service listens on `127.0.0.1` by default.
 
-配置与命令：
+Configuration and commands:
 
-- Pydantic `extra=forbid`；
-- 对 CLI 参数进行 Shell 安全校验；
-- 使用 `shlex` 组合固定命令；
-- 检查模型、设备和挂载路径；
-- 固定 Profiler 输出目录；
-- 高权限配置和 `--trust-remote-code` 显示 Warning。
+- Pydantic uses `extra=forbid`;
+- CLI parameters undergo shell-safety validation;
+- `shlex` is used to construct fixed commands;
+- Model, device, and mount paths are checked;
+- The profiler output directory is fixed;
+- Warnings are displayed for privileged settings and `--trust-remote-code`.
 
-文件系统：
+File system:
 
-- `VAP_HOME`、临时配置目录使用 `0700`；
-- 配置文件使用 `0600`；
-- 归档跳过符号链接；
-- 归档限制文件数量和总大小；
-- 清理和卸载拒绝危险路径。
+- `VAP_HOME` and temporary configuration directories use `0700` permissions;
+- Configuration files use `0600` permissions;
+- Symbolic links are skipped during archiving;
+- Archives are subject to limits on file count and total size;
+- Cleanup and uninstallation reject dangerous paths.
 
-供应链：
+Supply chain:
 
-- 安装器固定 `uv` 和 Perfetto 版本；
-- 下载内容执行 SHA256 校验；
-- Bootstrap 拒绝覆盖未知或有本地修改的源码目录。
+- The installer pins the `uv` and Perfetto versions;
+- Downloaded content is verified with SHA256 checksums;
+- Bootstrap refuses to overwrite an unrecognized source directory or one with local modifications.
 
-### 9.6 生命周期与失败处理
+### 9.6 Lifecycle and Failure Handling
 
-- Benchmark 失败时仍尝试停止 Profiler；
-- 工作流结束时停止并删除 Docker 容器；
-- 可视化进程写入 PID 文件并在退出时回收；
-- Server 使用单次运行锁防止并发启动；
-- Stop 请求可以在启动阶段被记录并随后处理；
-- 临时配置会按保留策略清理。
+- If the benchmark fails, VAP still attempts to stop the profiler;
+- The Docker container is stopped and removed when the workflow ends;
+- Visualization process IDs are written to a PID file, and the processes are reaped on exit;
+- The Server uses a single-run lock to prevent concurrent starts;
+- A stop request issued during startup can be recorded and processed subsequently;
+- Temporary configurations are cleaned up according to the retention policy.
 
-### 9.7 测试状态
+### 9.7 Test Status
 
-当前仓库使用 `unittest`：
+The repository currently uses `unittest`:
 
 ```bash
 cd VAP
 uv run python -m unittest discover -s tests -v
 ```
 
-当前验证覆盖：
+Current test coverage includes:
 
-- 配置安全与 Pydantic 行为；
-- 分布式 Warning；
-- CLI 参数引用；
-- 私有目录权限；
-- 清理边界；
-- Web Token、Cookie、同源与并发启动；
-- Profiler 异常后的 Stop；
-- CLI uninstall 参数转发；
-- Trace Fusion；
-- Agent Skill Schema。
+- Configuration security and Pydantic behavior;
+- The distributed-mode warning;
+- CLI argument quoting;
+- Private-directory permissions;
+- Cleanup boundaries;
+- Web tokens, cookies, same-origin enforcement, and concurrent startup;
+- Profiler shutdown after an error;
+- CLI uninstallation argument forwarding;
+- Trace Fusion;
+- The Agent Skill schema.
 
-撰写本文档时，当前 26 项测试全部通过。
-
----
-
-## 10. 已知限制
-
-- 自动安装器仅支持 Linux x86_64。
-- 分布式执行尚未实现，`distributed_cfg` 仅显示 Warning 并按本地模式运行。
-- VAP 使用高权限 Docker 配置，不能运行不可信镜像和模型。
-- `--trust-remote-code` 会执行模型仓库代码。
-- Web Server 不提供 TLS，不应直接暴露公网。
-- Perfetto Trace Processor 固定使用端口 `9001`。
-- 超大 Trace 合并可能消耗较多内存。
-- CLI 模式下，可视化进程存活期间主进程会持续运行。
-- 当前不提供 Kubernetes、Docker Compose 或多租户部署。
+At the time of writing, all 26 tests pass.
 
 ---
 
-## 11. 常见故障排查
+## 10. Known Limitations
+
+- The automated installer supports only Linux x86_64.
+- Distributed execution is not yet implemented. `distributed_cfg` only displays a warning, and execution proceeds in local mode.
+- VAP uses a privileged Docker configuration and must not run untrusted images or models.
+- `--trust-remote-code` executes code from the model repository.
+- The Web Server does not provide TLS and must not be exposed directly to the public internet.
+- The Perfetto Trace Processor uses the fixed port `9001`.
+- Merging very large traces can consume substantial memory.
+- In CLI mode, the main process continues running while the visualization processes remain active.
+- Kubernetes, Docker Compose, and multi-tenant deployment are not currently provided.
+
+---
+
+## 11. Common Troubleshooting Procedures
 
 ### `vap: command not found`
 
@@ -637,114 +637,114 @@ uv run python -m unittest discover -s tests -v
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-确认：
+Verify:
 
 ```bash
 ls -l ~/.local/bin/vap
 ```
 
-### Docker 无法连接
+### Cannot Connect to Docker
 
 ```bash
 docker info
 ```
 
-确认当前用户具有 Docker 权限，Docker daemon 正常运行。
+Verify that the current user has Docker permissions and that the Docker daemon is running correctly.
 
-### 模型目录不存在
+### Model Directory Does Not Exist
 
-确认：
+Verify:
 
 ```bash
 ls -ld <model_root>
 ls -ld <model_root>/<model_name>
 ```
 
-### GPU 不可见
+### GPU Is Not Visible
 
 ```bash
 ls -l /dev/kfd /dev/dri/
 ```
 
-检查 `container_cfg.devices`、用户组和 Docker 权限。
+Check `container_cfg.devices`, the user's group memberships, and Docker permissions.
 
-### 端口占用
+### Port Is Already in Use
 
 ```bash
 ss -ltnp | grep -E ':(8899|8080|6006|9001)\b'
 ```
 
-修改对应配置或停止冲突进程。
+Update the corresponding configuration or stop the conflicting process.
 
-### 前端没有加载最新配置
+### Frontend Does Not Load the Latest Configuration
 
-1. 点击 Reload；
-2. 确认 `/api/config?source=current` 返回的路径；
-3. 检查 `~/.vap/config.json` 是否覆盖 example config；
-4. 强制刷新浏览器；
-5. 重启 VAP Server。
+1. Click Reload.
+2. Verify the path returned by `/api/config?source=current`.
+3. Check whether `~/.vap/config.json` overrides the example configuration.
+4. Force-refresh the browser.
+5. Restart the VAP Server.
 
-### 找不到 Trace
+### Trace Cannot Be Found
 
-检查：
+Check:
 
 ```bash
 ls -R ~/.vap/logs/<run>/vllm-profile
 ```
 
-同时检查 vLLM 是否支持 `/start_profile` 和 `/stop_profile`。
+Also verify that vLLM supports `/start_profile` and `/stop_profile`.
 
-### Agent 无法解锁
+### Agent Cannot Be Unlocked
 
-检查：
+Check:
 
-- Subscription Key；
-- `VAP_LLM_BASE_URL`；
-- `VAP_LLM_MODEL`；
-- 网络访问；
-- `VAP_LLM_TIMEOUT_SEC`。
+- The subscription key;
+- `VAP_LLM_BASE_URL`;
+- `VAP_LLM_MODEL`;
+- Network access;
+- `VAP_LLM_TIMEOUT_SEC`.
 
 ---
 
-## 12. 上线验收清单
+## 12. Production-Readiness Checklist
 
-安装：
+Installation:
 
-- [ ] Linux x86_64 环境；
-- [ ] Docker daemon 可用；
-- [ ] `vap --help` 正常；
-- [ ] `~/.local/bin` 已加入 PATH；
-- [ ] 安装器下载校验通过。
+- [ ] Linux x86_64 environment;
+- [ ] Docker daemon is available;
+- [ ] `vap --help` executes successfully;
+- [ ] `~/.local/bin` is included in `PATH`;
+- [ ] Installer download verification succeeds.
 
-配置：
+Configuration:
 
-- [ ] Docker 镜像存在；
-- [ ] 模型目录存在；
-- [ ] GPU 设备存在；
-- [ ] Mount 源目录存在；
-- [ ] Deploy/Benchmark Host 和 Port 一致；
-- [ ] Tensor Parallel 不超过可见 GPU 数量；
-- [ ] 已评估 `--trust-remote-code`；
-- [ ] 已接受容器权限 Warning。
+- [ ] Docker image exists;
+- [ ] Model directory exists;
+- [ ] GPU devices exist;
+- [ ] Mount source directories exist;
+- [ ] Deployment and benchmark hosts and ports match;
+- [ ] Tensor parallelism does not exceed the number of visible GPUs;
+- [ ] The risks of `--trust-remote-code` have been assessed;
+- [ ] The container privilege warning has been acknowledged.
 
-运行：
+Runtime:
 
-- [ ] VAP 监听 `127.0.0.1`；
-- [ ] Token URL 可访问；
-- [ ] Validation 无红色错误；
-- [ ] vLLM `/health` 正常；
-- [ ] Benchmark 成功；
-- [ ] Profiler 正常启动和停止；
-- [ ] Trace 文件生成；
-- [ ] TensorBoard 可访问；
-- [ ] Perfetto 可读取 Trace。
+- [ ] VAP listens on `127.0.0.1`;
+- [ ] The tokenized URL is accessible;
+- [ ] Validation reports no red errors;
+- [ ] The vLLM `/health` endpoint responds successfully;
+- [ ] The benchmark completes successfully;
+- [ ] The profiler starts and stops correctly;
+- [ ] Trace files are generated;
+- [ ] TensorBoard is accessible;
+- [ ] Perfetto can read the trace.
 
-运维：
+Operations:
 
-- [ ] 日志目录有容量监控；
-- [ ] 升级前停止 VAP；
-- [ ] 定期执行 `vap clean`；
-- [ ] 已验证 `vap uninstall --help`；
-- [ ] 远程访问通过 SSH Tunnel 或受控代理；
-- [ ] 未将 Token URL 分享给无关人员。
+- [ ] Log-directory capacity is monitored;
+- [ ] VAP is stopped before upgrades;
+- [ ] `vap clean` is run periodically;
+- [ ] `vap uninstall --help` has been verified;
+- [ ] Remote access uses an SSH tunnel or controlled proxy;
+- [ ] The tokenized URL is not shared with unauthorized personnel.
 
