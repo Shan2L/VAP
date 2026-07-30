@@ -6,9 +6,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PAGES = {
     "deployment.md": ROOT / "DEPLOYMENT_AND_TECHNICAL_REPORT.md",
     "user-guide.md": ROOT / "USER_GUIDE.md",
+    "ui.md": ROOT / "UI_GUIDE.md",
     "agent.md": ROOT / "AGENT_GUIDE.md",
     "THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
     "assets/vap-banner.svg": ROOT / "assets/vap-banner.svg",
+    "assets/ui-overview.svg": ROOT / "assets/ui-overview.svg",
 }
 
 

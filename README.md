@@ -4,8 +4,9 @@
 
 VAP is a lightweight tool for deploying a vLLM service, running benchmark workloads, collecting profiler output, and viewing run logs through a simple web UI.
 
-For day-to-day operation, see the [User Guide](USER_GUIDE.md). For the reasoning
-layer, tool safety model, and trace-analysis workflow, see
+For day-to-day operation, see the [User Guide](USER_GUIDE.md). For every
+frontend panel and button, see the [Web UI Reference](UI_GUIDE.md). For the
+reasoning layer, tool safety model, and trace-analysis workflow, see
 [Agent and Skills](AGENT_GUIDE.md). For a production-oriented installation
 guide, deployment topology, operating procedures, and architecture report, see
 [VAP Deployment and Technical Report](DEPLOYMENT_AND_TECHNICAL_REPORT.md).

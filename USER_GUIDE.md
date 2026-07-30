@@ -356,6 +356,9 @@ Docker image. Keys and values follow the same safety rules as
 
 ## 6. Using the Web UI
 
+For a control-by-control explanation of every panel and button, see the
+[Web UI Reference](https://shan2l.github.io/VAP/ui/).
+
 ### 6.1 Config Page
 
 The Config page allows you to edit:

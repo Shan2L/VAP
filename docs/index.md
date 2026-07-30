@@ -12,6 +12,7 @@ Configure, validate, benchmark, profile, and inspect a trusted vLLM workload
 without stitching together a different script for every stage.
 
 [Open the User Guide](user-guide.md){ .md-button .md-button--primary }
+[Web UI Reference](ui.md){ .md-button }
 [Agent and Skills](agent.md){ .md-button }
 [Deployment and Architecture](deployment.md){ .md-button }
 
@@ -140,6 +141,8 @@ trusted network.
 
 - Start with the [User Guide](user-guide.md) for installation, configuration,
   Web UI, CLI, Agent usage, outputs, and troubleshooting.
+- Use the [Web UI Reference](ui.md) for every panel, toolbar action, button
+  state, log area, and Agent control.
 - Read [Agent and Skills](agent.md) for the reasoning layer, tool safety model,
   approval flow, and TorchProfilerTraceSkill.
 - Use the [Deployment and Technical Report](deployment.md) for architecture,
