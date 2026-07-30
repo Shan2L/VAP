@@ -4,6 +4,7 @@ import argparse
 import atexit
 import gzip
 import io
+import ipaddress
 import json
 import os
 import secrets
@@ -44,7 +45,8 @@ CONFIG_PATH = VAP_CONFIG_PATH
 LOGS_DIR = VAP_LOGS_DIR
 TEMP_CONFIG_DIR = VAP_TEMP_CONFIG_DIR
 PERFETTO_PORT = 9001
-SERVER_BIND_HOST = "127.0.0.1"
+DEFAULT_SERVER_HOST = "0.0.0.0"
+SERVER_BIND_HOST = DEFAULT_SERVER_HOST
 SERVER_SESSION_ID = uuid.uuid4().hex
 SERVER_AUTH_TOKEN = secrets.token_urlsafe(32)
 SERVER_COOKIE_NAME = f"vap_session_{SERVER_SESSION_ID[:12]}"
@@ -97,6 +99,60 @@ def same_origin_allowed(origin: str | None, host: str | None) -> bool:
     port = host.rsplit(":", 1)[1] if host and ":" in host else ""
     local_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
     return parsed.netloc in local_hosts
+
+
+def discover_network_hosts() -> list[str]:
+    """Return hostname/IP candidates that may be reachable from the LAN."""
+    candidates: list[str] = []
+
+    def add(host: str | None) -> None:
+        value = (host or "").strip()
+        if not value or any(ch.isspace() for ch in value):
+            return
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            if value.lower() == "localhost":
+                return
+        else:
+            if address.is_loopback or address.is_unspecified:
+                return
+        if value not in candidates:
+            candidates.append(value)
+
+    hostname = socket.getfqdn() or socket.gethostname()
+    add(hostname)
+    try:
+        for info in socket.getaddrinfo(
+            socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM
+        ):
+            add(info[4][0])
+    except OSError:
+        pass
+
+    # UDP connect selects the primary route without sending application data.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            add(probe.getsockname()[0])
+    except OSError:
+        pass
+    return candidates
+
+
+def build_session_urls(bind_host: str, port: int, token: str) -> list[tuple[str, str]]:
+    hosts: list[tuple[str, str]]
+    if bind_host in {"0.0.0.0", "::"}:
+        hosts = [("Local", "127.0.0.1")]
+        hosts.extend(("Network candidate", host) for host in discover_network_hosts())
+    else:
+        hosts = [("Session", bind_host)]
+
+    urls: list[tuple[str, str]] = []
+    for label, host in hosts:
+        url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        urls.append((label, f"http://{url_host}:{port}/?token={token}"))
+    return urls
 
 
 def cleanup_old_temp_configs(now: float | None = None) -> None:
@@ -2214,7 +2270,11 @@ def main(argv: list[str] | None = None) -> None:
     global SERVER_BIND_HOST
     ensure_vap_home()
     parser = argparse.ArgumentParser(description="VAP config management UI")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_SERVER_HOST,
+        help="Bind host (default: 0.0.0.0; use 127.0.0.1 for local-only access)",
+    )
     parser.add_argument("--port", type=int, default=8899)
     args = parser.parse_args(argv)
     SERVER_BIND_HOST = args.host
@@ -2229,11 +2289,19 @@ def main(argv: list[str] | None = None) -> None:
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
     server = ThreadingHTTPServer((args.host, args.port), VAPConfigHandler)
-    display_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     print(f"VAP config UI started: http://{args.host}:{args.port}")
-    print(
-        f"Open VAP with this session URL: http://{display_host}:{args.port}/?token={SERVER_AUTH_TOKEN}"
-    )
+    print("VAP session URL candidates:")
+    for label, url in build_session_urls(args.host, args.port, SERVER_AUTH_TOKEN):
+        print(f"  {label}: {url}")
+    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+        print(
+            "WARNING: VAP is listening on all network interfaces without TLS. "
+            "Use only on a trusted network and keep the session token private."
+        )
+        print(
+            f"Remote reachability still requires DNS/routing and a firewall rule "
+            f"allowing TCP port {args.port}."
+        )
     print(f"VAP home: {VAP_HOME}")
     print(f"Temporary config files will be saved to: {TEMP_CONFIG_DIR}")
     try:

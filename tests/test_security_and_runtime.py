@@ -203,6 +203,32 @@ class ServerAuthorizationTests(unittest.TestCase):
         )
         self.assertEqual(cookies[server.SERVER_COOKIE_NAME], "secret")
 
+    def test_wildcard_bind_prints_local_hostname_and_ip_candidates(self) -> None:
+        with patch.object(
+            server,
+            "discover_network_hosts",
+            return_value=["vap-host.example", "10.0.0.8"],
+        ):
+            urls = server.build_session_urls("0.0.0.0", 8899, "session-token")
+
+        self.assertEqual(
+            urls,
+            [
+                (
+                    "Local",
+                    "http://127.0.0.1:8899/?token=session-token",
+                ),
+                (
+                    "Network candidate",
+                    "http://vap-host.example:8899/?token=session-token",
+                ),
+                (
+                    "Network candidate",
+                    "http://10.0.0.8:8899/?token=session-token",
+                ),
+            ],
+        )
+
     def test_query_token_is_only_accepted_on_session_entrypoint(self) -> None:
         entry_handler = self.make_handler({})
         api_handler = self.make_handler({})
@@ -344,6 +370,19 @@ class RuntimeAndCliTests(unittest.TestCase):
 
         args, _ = run.call_args.args
         self.assertEqual(args.visualization_host, "localhost")
+
+    def test_cli_start_binds_all_interfaces_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text("{}\n", encoding="utf-8")
+            with (
+                patch.object(cli, "VAP_CONFIG_PATH", config_path),
+                patch.object(cli, "ensure_vap_home"),
+                patch.object(cli.vap_server, "main") as start_server,
+            ):
+                cli.main(["start"])
+
+        start_server.assert_called_once_with(["--host", "0.0.0.0", "--port", "8899"])
 
     def test_cli_uninstall_forwards_options_to_script(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

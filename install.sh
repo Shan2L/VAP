@@ -126,7 +126,7 @@ fi
 echo
 echo "Available commands:"
 echo "  vap start [--host HOST] [--port PORT]"
-echo "      Start the Web UI and local control server."
+echo "      Start the Web UI and local control server (default host: 0.0.0.0)."
 echo "  vap run [--config FILE] [--visualization-host HOST]"
 echo "      Run deployment, benchmark, profiling, and visualization from the CLI."
 echo "  vap clean [--logs-dir DIR]"

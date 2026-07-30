@@ -258,16 +258,23 @@ vap start
 This is equivalent to:
 
 ```bash
-vap start --host 127.0.0.1 --port 8899
+vap start --host 0.0.0.0 --port 8899
 ```
 
-After startup, the service prints a URL containing a per-process startup token:
+After startup, the service prints local, hostname, and IP candidates containing
+the same per-process startup token:
 
 ```text
-Open VAP with this session URL: http://127.0.0.1:8899/?token=...
+VAP session URL candidates:
+  Local: http://127.0.0.1:8899/?token=...
+  Network candidate: http://vap-host:8899/?token=...
+  Network candidate: http://10.0.0.8:8899/?token=...
 ```
 
 After the first access, the token is stored in a `SameSite=Strict` cookie and removed from the browser's address bar.
+The hostname/IP entries are candidates rather than a remote-reachability
+guarantee. Access still depends on DNS or routing and a firewall rule allowing
+`8899/tcp`.
 
 ### 6.2 Remote Access
 
@@ -276,7 +283,7 @@ To install, start, and tunnel VAP in one command, replace `{user}` and
 
 ```bash
 ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} \
-  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start'
+  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start --host 127.0.0.1'
 ```
 
 The remote service remains bound to loopback. The local browser can use the
@@ -293,13 +300,16 @@ ssh -L 8899:127.0.0.1:8899 user@vap-host
 
 Then open the URL printed by VAP in a local browser.
 
-Directly using the following command is not recommended:
+The default command exposes VAP on every network interface:
 
 ```bash
-vap start --host 0.0.0.0
+vap start
 ```
 
-This exposes the service on every network interface. VAP does not provide TLS and must not be used as a substitute for a production authentication gateway.
+This is convenient on a trusted network, but VAP does not provide TLS and must
+not be used as a substitute for a production authentication gateway. For
+untrusted or production networks, explicitly use `--host 127.0.0.1` with an SSH
+tunnel or controlled reverse proxy.
 
 ### 6.3 Web UI Workflow
 
@@ -569,7 +579,9 @@ HTTP control plane:
 - A `SameSite=Strict` cookie is used after authentication;
 - Mutating requests must use JSON;
 - Same-origin `Origin` checks are enforced;
-- The service listens on `127.0.0.1` by default.
+- The service listens on `0.0.0.0` by default and prints a warning because it
+  does not provide TLS;
+- Operators can pass `--host 127.0.0.1` for loopback-only deployments.
 
 Configuration and commands:
 
@@ -743,7 +755,8 @@ Configuration:
 
 Runtime:
 
-- [ ] VAP listens on `127.0.0.1`;
+- [ ] The default `0.0.0.0` exposure is acceptable for the network, or VAP was
+      started with `--host 127.0.0.1`;
 - [ ] The tokenized URL is accessible;
 - [ ] Validation reports no red errors;
 - [ ] The vLLM `/health` endpoint responds successfully;

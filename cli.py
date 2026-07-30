@@ -14,7 +14,11 @@ def main(argv: list[str] | None = None) -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     start_parser = subparsers.add_parser("start", help="Start the VAP web UI server")
-    start_parser.add_argument("--host", default="127.0.0.1")
+    start_parser.add_argument(
+        "--host",
+        default=vap_server.DEFAULT_SERVER_HOST,
+        help="Bind host (default: 0.0.0.0; use 127.0.0.1 for local-only access)",
+    )
     start_parser.add_argument("--port", type=int, default=8899)
 
     run_parser = subparsers.add_parser("run", help="Run the VAP workflow")

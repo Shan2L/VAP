@@ -29,7 +29,7 @@ Replace `{user}` and `{hostname}`, then run this command on your local machine:
 
 ```bash
 ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} \
-  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start'
+  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start --host 127.0.0.1'
 ```
 
 The command installs VAP and starts it on the remote host while forwarding remote
@@ -55,7 +55,7 @@ Make sure Docker is available and the configured image, model path, devices, and
 
 The installer prints this command summary when it finishes:
 
-- `vap start [--host HOST] [--port PORT]` starts the Web UI and local control server.
+- `vap start [--host HOST] [--port PORT]` starts the Web UI and local control server. The default host is `0.0.0.0`.
 - `vap run [--config FILE] [--visualization-host HOST]` runs deployment, benchmark, profiling, and visualization directly from the CLI.
 - `vap clean [--logs-dir DIR]` removes generated logs from VAP's managed logs directory.
 - `vap uninstall [--purge] [--remove-source] [--yes]` removes the managed installation. Config and logs are preserved unless `--purge` is used.
@@ -88,13 +88,24 @@ Run the local control server:
 vap start
 ```
 
-Open the session URL printed by the server. It includes a per-process startup token:
+By default, VAP listens on `0.0.0.0:8899`, so trusted machines on the same
+network can connect through the server IP or hostname. Use
+`vap start --host 127.0.0.1` to restrict access to the local machine.
+
+The server prints local, hostname, and IP candidates with the same per-process
+startup token:
 
 ```text
-Open VAP with this session URL: http://127.0.0.1:8899/?token=...
+VAP session URL candidates:
+  Local: http://127.0.0.1:8899/?token=...
+  Network candidate: http://vap-host:8899/?token=...
+  Network candidate: http://10.0.0.8:8899/?token=...
 ```
 
 The first request stores the session in a `SameSite=Strict` cookie and removes the token from the visible browser URL. Direct API clients must send the token in `X-VAP-Token`; state-changing requests must also use JSON and a same-origin `Origin` header when one is present.
+
+Hostname/IP entries are candidates, not a reachability guarantee. Remote access
+also requires working DNS or routing and a firewall rule allowing `8899/tcp`.
 
 The UI lets you:
 
@@ -145,6 +156,10 @@ VAP currently keeps the existing profiling-compatible Docker behavior:
 - ROCm device mounts, including `/dev/kfd` and `/dev/mem`.
 
 The UI and CLI display a warning instead of blocking these settings. Run only trusted images, models, configs, and model repositories.
+
+The Web UI also listens on all network interfaces by default. It requires the
+session token but does not provide TLS; use a firewall or explicitly pass
+`--host 127.0.0.1` on untrusted networks.
 
 The example config still includes `--trust-remote-code` for compatibility. This allows model repository code to execute inside the elevated VAP container. Remove the option unless the model source is trusted.
 

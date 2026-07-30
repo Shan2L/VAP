@@ -64,7 +64,7 @@ Run the following on your local machine after replacing `{user}` and
 
 ```bash
 ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} \
-  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start'
+  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start --host 127.0.0.1'
 ```
 
 This single SSH command:
@@ -111,7 +111,7 @@ You can add this line to `~/.bashrc`.
 
 The installer prints the available commands when installation finishes:
 
-- `vap start [--host HOST] [--port PORT]` starts the Web UI and local control server.
+- `vap start [--host HOST] [--port PORT]` starts the Web UI and local control server. It binds to `0.0.0.0` by default.
 - `vap run [--config FILE] [--visualization-host HOST]` runs deployment, benchmark, profiling, and visualization without the Web UI.
 - `vap clean [--logs-dir DIR]` removes generated VAP logs. It refuses arbitrary filesystem paths.
 - `vap uninstall [--purge] [--remove-source] [--yes]` removes the managed installation. By default it preserves config and logs.
@@ -139,24 +139,33 @@ Start the local service:
 vap start
 ```
 
-By default, the service listens on `127.0.0.1:8899` and prints output similar to:
+By default, the service listens on `0.0.0.0:8899` and prints local, hostname,
+and IP candidates:
 
 ```text
-Open VAP with this session URL: http://127.0.0.1:8899/?token=...
+VAP session URL candidates:
+  Local: http://127.0.0.1:8899/?token=...
+  Network candidate: http://vap-host:8899/?token=...
+  Network candidate: http://10.0.0.8:8899/?token=...
 ```
 
 You must use the complete URL printed by the current startup process. After the
 first access, VAP sets a `SameSite=Strict` session cookie and removes the token
 from the browser address bar.
 
+The hostname/IP entries are candidates rather than a reachability guarantee.
+Access from another machine still requires working DNS or routing and a firewall
+rule that permits `8899/tcp`.
+
 Important:
 
 - VAP generates a new token each time it restarts.
 - Do not share a URL that contains a token.
 - If the page returns `401 Unauthorized`, copy the latest startup URL again.
-- Using `--host 0.0.0.0` is not recommended unless a firewall and trusted network are in place.
+- The default `0.0.0.0` binding has no TLS. Use it only with a firewall and a
+  trusted network.
 
-To customize the listening address and port:
+To restrict access to the local machine:
 
 ```bash
 vap start --host 127.0.0.1 --port 8899
