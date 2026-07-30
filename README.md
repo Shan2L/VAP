@@ -140,7 +140,11 @@ The web UI does not overwrite the original config when starting a run. It sends 
 
 The deploy and benchmark `--host` / `--port` values should stay consistent. The UI keeps these fields synchronized automatically.
 
-`profiler_cfg.tensorboard_port` controls TensorBoard. Perfetto Trace Processor is fixed to local port `9001` so `https://ui.perfetto.dev/` can discover it through the standard local endpoint.
+`profiler_cfg.tensorboard_port` controls TensorBoard. Perfetto Trace Processor
+uses local port `9001`. If that optional port is unavailable, validation shows a
+warning, profiling continues, and only automatic Perfetto visualization is
+skipped. Clicking the Perfetto button then offers a direct trace download and a
+link to `https://ui.perfetto.dev/` for manual import.
 
 Configuration is strict: unknown fields, invalid ports, mismatched deploy/benchmark endpoints, and unsafe CLI values are rejected by both the UI and CLI. Distributed execution is not implemented yet; a present `distributed_cfg` produces a warning and VAP continues in local mode.
 

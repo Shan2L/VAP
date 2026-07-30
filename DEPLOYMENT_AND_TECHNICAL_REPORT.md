@@ -92,7 +92,9 @@ Default or commonly used ports:
 - VAP Web UI: `8899`
 - vLLM: Configured by `vllm_deploy_cfg.--port`
 - TensorBoard: Configured by `profiler_cfg.tensorboard_port`; default: `6006`
-- Perfetto Trace Processor: Fixed at `9001`
+- Perfetto Trace Processor: Optional fixed port `9001`; if unavailable, VAP
+  emits a warning and continues without automatic Perfetto visualization. The
+  UI provides a trace download and `https://ui.perfetto.dev/` manual-import path.
 
 ---
 
@@ -682,7 +684,8 @@ At the time of writing, all 26 tests pass.
 - VAP uses a privileged Docker configuration and must not run untrusted images or models.
 - `--trust-remote-code` executes code from the model repository.
 - The Web Server does not provide TLS and must not be exposed directly to the public internet.
-- The Perfetto Trace Processor uses the fixed port `9001`.
+- The Perfetto Trace Processor uses optional fixed port `9001`; an unavailable
+  port skips Perfetto without failing the profiling run.
 - Merging very large traces can consume substantial memory.
 - In CLI mode, the main process continues running while the visualization processes remain active.
 - Kubernetes, Docker Compose, and multi-tenant deployment are not currently provided.
@@ -734,7 +737,9 @@ Check `container_cfg.devices`, the user's group memberships, and Docker permissi
 ss -ltnp | grep -E ':(8899|8080|6006|9001)\b'
 ```
 
-Update the corresponding configuration or stop the conflicting process.
+Update the corresponding required-port configuration or stop the conflicting
+process. If only `9001` is occupied, VAP logs a warning and continues; free the
+port only when Perfetto visualization is required.
 
 ### Frontend Does Not Load the Latest Configuration
 

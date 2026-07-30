@@ -137,7 +137,6 @@ def validate_local_service_port_conflicts(
             "TensorBoard port",
             config.profiler_cfg.tensorboard_port,
         ),
-        ("perfetto.port", "Perfetto Trace Processor port", PERFETTO_PORT),
     ]
     if local_vllm_port is not None:
         ports.insert(
@@ -337,6 +336,22 @@ def validate_cli_args(cfg_name: str, cfg: dict[str, Any]) -> list[dict[str, str]
 
 def build_security_warnings(config: VAPConfig) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
+    conflicting_services: list[str] = []
+    if config.vllm_deploy_cfg.get("--port") == PERFETTO_PORT:
+        conflicting_services.append("vLLM")
+    if config.profiler_cfg.tensorboard_port == PERFETTO_PORT:
+        conflicting_services.append("TensorBoard")
+    if conflicting_services:
+        warnings.append(
+            {
+                "path": "perfetto.port",
+                "message": (
+                    f"Perfetto port {PERFETTO_PORT} conflicts with "
+                    f"{' and '.join(conflicting_services)}; Perfetto visualization "
+                    "will be skipped."
+                ),
+            }
+        )
     if config.distributed_cfg is not None:
         warnings.append(
             {

@@ -1646,6 +1646,36 @@
       word-break: break-word;
     }
 
+    .perfetto-fallback-modal {
+      width: min(620px, 100%);
+      max-height: min(680px, calc(100vh - 40px));
+    }
+
+    .perfetto-fallback-body {
+      display: grid;
+      gap: 14px;
+      overflow: auto;
+      padding: 20px;
+    }
+
+    .perfetto-fallback-body p,
+    .perfetto-fallback-body ol {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .perfetto-fallback-body ol {
+      padding-left: 22px;
+    }
+
+    .perfetto-manual-link {
+      color: var(--accent-strong);
+      font-family: var(--mono);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
     @media (max-width: 1100px) {
       main {
         grid-template-columns: 1fr;
@@ -1906,6 +1936,34 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="perfetto-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="perfetto-fallback-title">
+    <div class="validation-modal perfetto-fallback-modal">
+      <div class="validation-head">
+        <div>
+          <h3 id="perfetto-fallback-title">Perfetto Port Unavailable</h3>
+          <p>Local port 9001 is unavailable, so automatic Perfetto visualization was skipped.</p>
+        </div>
+        <button class="small" id="perfetto-fallback-close" type="button"><span class="button-icon" aria-hidden="true">×</span>Close</button>
+      </div>
+      <div class="perfetto-fallback-body">
+        <p>Your profiling run and trace are still available. Download the trace, open the Perfetto UI, and select the downloaded JSON or JSON.GZ file manually.</p>
+        <a class="perfetto-manual-link" href="https://ui.perfetto.dev/" target="_blank" rel="noopener noreferrer">https://ui.perfetto.dev/</a>
+        <ol>
+          <li>Click <strong>Download Trace</strong> below.</li>
+          <li>Open the Perfetto UI link.</li>
+          <li>Choose <strong>Open trace file</strong> and select the downloaded file.</li>
+        </ol>
+      </div>
+      <div class="validation-foot">
+        <span>Automatic upload is unavailable while port 9001 is occupied.</span>
+        <div class="validation-actions">
+          <button class="small" id="perfetto-fallback-download" type="button"><span class="button-icon" aria-hidden="true">⇩</span>Download Trace</button>
+          <button class="primary small" id="perfetto-fallback-open" type="button"><span class="button-icon" aria-hidden="true">↗</span>Open Perfetto UI</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
@@ -1937,6 +1995,9 @@
     const validationProgressPercent = document.getElementById("validation-progress-percent");
     const validationProgressBar = document.getElementById("validation-progress-bar");
     const validationRunButton = document.getElementById("validation-run");
+    const perfettoFallbackModal = document.getElementById("perfetto-fallback-modal");
+    const perfettoFallbackDownload = document.getElementById("perfetto-fallback-download");
+    const perfettoFallbackOpen = document.getElementById("perfetto-fallback-open");
     const logOutput = document.getElementById("log-output");
     const deployLogOutput = document.getElementById("deploy-log-output");
     const benchLogOutput = document.getElementById("bench-log-output");
@@ -1985,6 +2046,7 @@
     let currentConfig = DEFAULT_CONFIG;
     let currentConfigSource = null;
     let currentRunDir = null;
+    let perfettoPortUnavailable = false;
     let draftSaveTimer = null;
     let agentMessages = [];
     let agentUnlocked = false;
@@ -2912,10 +2974,15 @@
       btnTensorBoard.title = isReady ? "TensorBoard is ready. Click to open it." : "Open TensorBoard";
     }
 
-    function setProfileActionsReady(isReady) {
+    function setProfileActionsReady(isReady, options = {}) {
+      perfettoPortUnavailable = Boolean(isReady && options.perfettoPortUnavailable);
       btnPerfetto.disabled = !isReady;
       btnProfileDownload.disabled = !isReady;
-      btnPerfetto.title = isReady ? "Open Perfetto UI" : "Trace is not ready yet";
+      btnPerfetto.title = !isReady
+        ? "Trace is not ready yet"
+        : perfettoPortUnavailable
+          ? "Port 9001 unavailable; download the trace for manual Perfetto analysis"
+          : "Open Perfetto UI";
       btnProfileDownload.title = isReady ? "Download current vllm-profile archive" : "Trace is not ready yet";
     }
 
@@ -3419,7 +3486,7 @@
         },
         {
           title: "Local Port Availability",
-          detail: "Check whether vLLM, Ray, TensorBoard, and Perfetto ports are already in use",
+          detail: "Check required vLLM/TensorBoard ports and optional Perfetto availability",
           run: async () => {
             const data = await checkPortsOnServer(config);
             if (data.valid === false) {
@@ -3428,17 +3495,25 @@
                 .join("\n");
               throw new Error(messages || "Config validation failed before port checks");
             }
-            const blockedPorts = (data.ports || []).filter((port) => !port.available);
+            const blockedPorts = (data.ports || [])
+              .filter((port) => !port.available && port.blocking !== false);
             if (blockedPorts.length) {
               throw new Error(blockedPorts.map((port) => port.message).join("\n"));
             }
+            const optionalBlockedPorts = (data.ports || [])
+              .filter((port) => !port.available && port.blocking === false);
             const portMessage = (data.ports || [])
+              .filter((port) => port.available)
               .map((port) => `${port.name} ${port.port} is available`)
               .join("; ") || "No ports need to be checked";
+            const warnings = optionalBlockedPorts.map((port) => port.message);
             if (config.distributed_cfg) {
+              warnings.push("Distributed mode unavailable; Ray port check skipped.");
+            }
+            if (warnings.length) {
               return {
                 status: "warning",
-                message: "Distributed mode unavailable; Ray port check skipped.\nOther local ports are available.",
+                message: `${warnings.join("\n")}\n${portMessage}`,
               };
             }
             return portMessage;
@@ -3775,8 +3850,13 @@
       currentRunDir = data.run_dir || currentRunDir;
       updateLogContent(logOutput, vapLogContent);
       const profileReady = vapLogContent.includes("Profile archive has been saved to:");
+      const perfettoStarted = vapLogContent.includes("Perfetto Trace Processor started with pid");
+      const perfettoUnavailable = !perfettoStarted
+        && vapLogContent.includes("Perfetto Trace Processor port 9001 is not available");
       setTensorBoardReady(Boolean(profileReady && vapLogContent.includes("TensorBoard started with pid")));
-      setProfileActionsReady(profileReady);
+      setProfileActionsReady(profileReady, {
+        perfettoPortUnavailable: perfettoUnavailable,
+      });
 
       if (data.running) {
         setRunState("running", "Running");
@@ -3797,6 +3877,7 @@
 
     async function runVap(config = buildConfig()) {
       currentRunDir = null;
+      hidePerfettoFallback();
       updateLogContent(logOutput, "", { forceScroll: true });
       setTensorBoardReady(false);
       setProfileActionsReady(false);
@@ -3835,8 +3916,29 @@
       showToast("TensorBoard opened");
     }
 
+    function showPerfettoFallback() {
+      perfettoFallbackModal.classList.add("show");
+    }
+
+    function hidePerfettoFallback() {
+      perfettoFallbackModal.classList.remove("show");
+    }
+
+    function openManualPerfetto() {
+      const perfettoWindow = window.open("https://ui.perfetto.dev/", "_blank", "noopener,noreferrer");
+      if (!perfettoWindow) {
+        showToast("Popup was blocked. Open https://ui.perfetto.dev/ manually.", "error");
+        return;
+      }
+      showToast("Perfetto UI opened. Select the downloaded trace file.");
+    }
+
     async function openPerfetto() {
       if (btnPerfetto.disabled) return;
+      if (perfettoPortUnavailable) {
+        showPerfettoFallback();
+        return;
+      }
       const perfettoWindow = window.open("https://ui.perfetto.dev/", "_blank");
       if (!perfettoWindow) {
         showToast("Popup was blocked. Allow popups for VAP and try again.", "error");
@@ -3918,6 +4020,25 @@
       if (quotedMatch) return quotedMatch[1];
       const plainMatch = disposition.match(/filename=([^;]+)/i);
       return plainMatch ? plainMatch[1].trim() : fallbackName;
+    }
+
+    async function downloadCurrentTrace() {
+      const query = currentRunDir ? `?run_dir=${encodeURIComponent(currentRunDir)}` : "";
+      const response = await fetch(`/api/profile/trace${query}`);
+      if (!response.ok) {
+        const data = await readJsonResponse(response, "Failed to download trace");
+        throw new Error(data.message || "Failed to download trace");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = getDownloadFileName(response, "vap-trace.json.gz");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast("Trace download started");
     }
 
     async function downloadProfileArchive() {
@@ -4030,6 +4151,14 @@
     validationModal.addEventListener("click", (event) => {
       if (event.target === validationModal) validationModal.classList.remove("show");
     });
+    document.getElementById("perfetto-fallback-close").addEventListener("click", hidePerfettoFallback);
+    perfettoFallbackModal.addEventListener("click", (event) => {
+      if (event.target === perfettoFallbackModal) hidePerfettoFallback();
+    });
+    perfettoFallbackDownload.addEventListener("click", () => {
+      downloadCurrentTrace().catch((error) => showToast(error.message, "error"));
+    });
+    perfettoFallbackOpen.addEventListener("click", openManualPerfetto);
 
     applyTheme(getCurrentTheme());
     initLayoutSplitter();

@@ -110,17 +110,25 @@ def is_port_available(port: int) -> bool:
 
 
 def check_port_availability(config: VAPConfig):
-    ports = {
+    required_ports = {
         "vLLM": config.vllm_port,
         "TensorBoard": config.profiler_cfg.tensorboard_port,
-        "Perfetto Trace Processor": PERFETTO_PORT,
     }
-    for name, port in ports.items():
+    for name, port in required_ports.items():
         if is_port_available(port):
             logger.info("%s port %s is available", name, port)
             continue
         logger.error("%s port %s is not available", name, port)
         raise RuntimeError(f"{name} port {port} is not available")
+
+    if is_port_available(PERFETTO_PORT):
+        logger.info("Perfetto Trace Processor port %s is available", PERFETTO_PORT)
+    else:
+        logger.warning(
+            "Perfetto Trace Processor port %s is not available; "
+            "profiling will continue and Perfetto visualization will be skipped",
+            PERFETTO_PORT,
+        )
 
 
 def check_remote_assets(node: str, asset_path: str) -> bool:
@@ -453,6 +461,12 @@ def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
         logger.warning("No Perfetto-compatible trace found under %s", profile_dir)
     elif trace_processor is None:
         logger.warning("trace_processor is not available; skip Perfetto visualization")
+    elif not is_port_available(PERFETTO_PORT):
+        logger.warning(
+            "Perfetto Trace Processor port %s is not available; "
+            "skip Perfetto visualization",
+            PERFETTO_PORT,
+        )
     else:
         perfetto_home = str(VAP_PERFETTO_HOME)
         os.makedirs(perfetto_home, exist_ok=True)
@@ -468,10 +482,6 @@ def visualize_profile(config: VAPConfig, log_dir: str, visualization_host: str):
             trace_path,
         ]
         try:
-            if not is_port_available(PERFETTO_PORT):
-                raise RuntimeError(
-                    f"Perfetto Trace Processor port {PERFETTO_PORT} is not available"
-                )
             perfetto_process = subprocess.Popen(perfetto_cmd, env=perfetto_env)
         except FileNotFoundError:
             logger.warning(

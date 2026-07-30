@@ -143,6 +143,18 @@ class ConfigSecurityTests(unittest.TestCase):
             )
         )
 
+    def test_perfetto_port_conflict_is_warning_only(self) -> None:
+        payload = example_payload()
+        payload["vllm_deploy_cfg"]["--port"] = validation.PERFETTO_PORT
+        payload["vllm_bench_cfg"]["--port"] = validation.PERFETTO_PORT
+
+        result = validation.validate_config_payload(payload)
+
+        self.assertTrue(result["valid"])
+        self.assertTrue(
+            any(warning["path"] == "perfetto.port" for warning in result["warnings"])
+        )
+
 
 class ServerAuthorizationTests(unittest.TestCase):
     def make_handler(self, headers: dict[str, str]):
@@ -228,6 +240,24 @@ class ServerAuthorizationTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_perfetto_port_check_is_non_blocking(self) -> None:
+        with patch.object(
+            server,
+            "is_local_port_available",
+            side_effect=lambda port: port != server.PERFETTO_PORT,
+        ):
+            result = server.check_config_ports(example_payload())
+
+        perfetto = next(
+            port
+            for port in result["ports"]
+            if port["name"] == "Perfetto Trace Processor port"
+        )
+        self.assertTrue(result["valid"])
+        self.assertFalse(perfetto["available"])
+        self.assertFalse(perfetto["blocking"])
+        self.assertIn("will be skipped", perfetto["message"])
 
     def test_query_token_is_only_accepted_on_session_entrypoint(self) -> None:
         entry_handler = self.make_handler({})
@@ -340,6 +370,47 @@ class FileBoundaryTests(unittest.TestCase):
 
 
 class RuntimeAndCliTests(unittest.TestCase):
+    def test_perfetto_port_unavailable_does_not_block_run(self) -> None:
+        parsed = config.VAPConfig.model_validate(example_payload())
+        with (
+            patch.object(
+                main,
+                "is_port_available",
+                side_effect=lambda port: port != main.PERFETTO_PORT,
+            ),
+            self.assertLogs("VAP", level="WARNING") as logs,
+        ):
+            main.check_port_availability(parsed)
+
+        self.assertTrue(
+            any(
+                "Perfetto visualization will be skipped" in line for line in logs.output
+            )
+        )
+
+    def test_perfetto_visualization_is_skipped_when_port_is_unavailable(self) -> None:
+        parsed = config.VAPConfig.model_validate(example_payload())
+        with tempfile.TemporaryDirectory() as tmp:
+            log_dir = Path(tmp)
+            trace_path = log_dir / "trace.json"
+            trace_path.write_text('{"traceEvents": []}\n', encoding="utf-8")
+            with (
+                patch.object(main, "find_tensorboard_command", return_value=None),
+                patch.object(main, "find_perfetto_trace", return_value=str(trace_path)),
+                patch.object(
+                    main, "find_trace_processor", return_value="/bin/trace_processor"
+                ),
+                patch.object(main, "is_port_available", return_value=False),
+                patch.object(main.subprocess, "Popen") as popen,
+                self.assertLogs("VAP", level="WARNING") as logs,
+            ):
+                main.visualize_profile(parsed, str(log_dir), "127.0.0.1")
+
+        popen.assert_not_called()
+        self.assertTrue(
+            any("skip Perfetto visualization" in line for line in logs.output)
+        )
+
     def test_profile_stop_runs_after_benchmark_failure(self) -> None:
         parsed = config.VAPConfig.model_validate(example_payload())
         start_response = Mock()
@@ -493,6 +564,18 @@ class RuntimeAndCliTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Refusing"):
                     main.clean(str(outside))
             self.assertTrue(outside.is_dir())
+
+
+class FrontendFallbackTests(unittest.TestCase):
+    def test_perfetto_fallback_dialog_supports_manual_trace_import(self) -> None:
+        html = (PROJECT_ROOT / "public" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="perfetto-fallback-modal"', html)
+        self.assertIn('id="perfetto-fallback-download"', html)
+        self.assertIn("https://ui.perfetto.dev/", html)
+        self.assertIn("async function downloadCurrentTrace()", html)
+        self.assertIn("if (perfettoPortUnavailable)", html)
+        self.assertIn("port.blocking === false", html)
 
 
 class TraceSkillSchemaTests(unittest.TestCase):

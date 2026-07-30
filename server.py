@@ -215,24 +215,33 @@ def check_config_ports(payload: dict[str, Any]) -> dict[str, Any]:
             "name": "vLLM service port",
             "port": config.vllm_port,
             "available": is_local_port_available(config.vllm_port),
+            "blocking": True,
         },
         {
             "name": "TensorBoard port",
             "port": config.profiler_cfg.tensorboard_port,
             "available": is_local_port_available(config.profiler_cfg.tensorboard_port),
+            "blocking": True,
         },
         {
             "name": "Perfetto Trace Processor port",
             "port": PERFETTO_PORT,
             "available": is_local_port_available(PERFETTO_PORT),
+            "blocking": False,
         },
     ]
     for item in ports:
-        item["message"] = (
-            f"Local port {item['port']} is available"
-            if item["available"]
-            else f"Local port {item['port']} is already in use or cannot be bound"
-        )
+        if item["available"]:
+            item["message"] = f"Local port {item['port']} is available"
+        elif item["blocking"]:
+            item["message"] = (
+                f"Local port {item['port']} is already in use or cannot be bound"
+            )
+        else:
+            item["message"] = (
+                f"Local port {item['port']} is unavailable; Perfetto visualization "
+                "will be skipped"
+            )
     return {"valid": True, "ports": ports}
 
 

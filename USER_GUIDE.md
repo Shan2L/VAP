@@ -40,7 +40,9 @@ Before installation, confirm that:
 - The Docker daemon is running, and the current user has permission to access Docker.
 - The model directory and required ROCm devices exist on the host.
 - The Docker image specified in the configuration already exists locally.
-- Port `8899`, the vLLM port, the TensorBoard port, and port `9001` are available.
+- Port `8899`, the vLLM port, and the TensorBoard port are available. Perfetto
+  uses optional port `9001`; if occupied, profiling continues without Perfetto
+  visualization.
 - The HTTPS endpoints required to install dependencies are accessible.
 
 VAP is currently configured for ROCm profiling and uses:
@@ -633,7 +635,9 @@ Check:
 ss -ltnp
 ```
 
-By default, check ports `8899`, `8080`, `6006`, and `9001`.
+By default, check required ports `8899`, `8080`, and `6006`. Port `9001` is
+optional: an occupied port produces a warning and skips Perfetto while preserving
+the run, logs, traces, TensorBoard, and trace download.
 
 ### vLLM Readiness Timeout
 
@@ -653,7 +657,16 @@ that `--profiler-config.*` is passed correctly in the deployment arguments.
 
 ### TensorBoard Button Is Unavailable
 
-Confirm that:
+If port `9001` was unavailable when the run completed, VAP intentionally skipped
+starting the Perfetto Trace Processor. Free the port and start a new run when
+Perfetto visualization is required.
+
+In this state, the Perfetto button opens a fallback dialog instead of attempting
+automatic upload. Use **Download Trace**, open the provided
+[`https://ui.perfetto.dev/`](https://ui.perfetto.dev/) link, choose
+**Open trace file**, and select the downloaded JSON or JSON.GZ file.
+
+Also confirm that:
 
 - Profiling completed successfully.
 - A trace exists in `vllm-profile`.
