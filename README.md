@@ -23,6 +23,19 @@ curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash
 
 The bootstrap installer keeps a managed source checkout at `~/.local/share/vap/source` and then runs the verified project installer. Set `VAP_REF` to install a specific branch or tag.
 
+### One-command remote deployment
+
+Replace `{user}` and `{hostname}`, then run this command on your local machine:
+
+```bash
+ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} 'script=$(mktemp) && trap "rm -f $script" EXIT && curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh -o "$script" && bash "$script" && rm -f "$script" && trap - EXIT && export PATH="$HOME/.local/bin:$PATH" && exec vap start'
+```
+
+The command installs VAP and starts it on the remote host while forwarding remote
+`127.0.0.1:8899` to local `127.0.0.1:8899`. Open the tokenized URL printed in
+the SSH session in your local browser. Keep the SSH session open; `Ctrl-C`
+stops VAP and closes the tunnel.
+
 If you already have a source checkout, run the project installer directly:
 
 ```bash

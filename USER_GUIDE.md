@@ -57,6 +57,31 @@ curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh \
   | VAP_REF=v0.2.0 bash
 ```
 
+### One-Command Remote Deployment
+
+Run the following on your local machine after replacing `{user}` and
+`{hostname}`:
+
+```bash
+ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} 'script=$(mktemp) && trap "rm -f $script" EXIT && curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh -o "$script" && bash "$script" && rm -f "$script" && trap - EXIT && export PATH="$HOME/.local/bin:$PATH" && exec vap start'
+```
+
+This single SSH command:
+
+- downloads and executes the bootstrap installer on the remote host;
+- adds the remote user bin directory to `PATH` for the current session;
+- starts VAP on remote `127.0.0.1:8899`;
+- forwards it to local `127.0.0.1:8899`.
+
+Open the tokenized URL printed in the SSH session in your local browser. Keep
+the SSH session open while using VAP. Press `Ctrl-C` to stop the remote VAP
+process and close the tunnel.
+
+The remote host must already satisfy the Docker, GPU, model, and network
+requirements described in this guide. If local port `8899` is occupied, choose
+another local port in `-L`, for example `-L 18899:127.0.0.1:8899`, and replace
+port `8899` with `18899` when opening the printed URL locally.
+
 If you already have a source checkout, run:
 
 ```bash

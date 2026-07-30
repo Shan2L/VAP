@@ -261,7 +261,7 @@ This is equivalent to:
 vap start --host 127.0.0.1 --port 8899
 ```
 
-After startup, the service prints a URL containing a one-time startup token:
+After startup, the service prints a URL containing a per-process startup token:
 
 ```text
 Open VAP with this session URL: http://127.0.0.1:8899/?token=...
@@ -271,7 +271,20 @@ After the first access, the token is stored in a `SameSite=Strict` cookie and re
 
 ### 6.2 Remote Access
 
-Keep VAP bound to the loopback address and access it through an SSH tunnel:
+To install, start, and tunnel VAP in one command, replace `{user}` and
+`{hostname}` and run locally:
+
+```bash
+ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} 'script=$(mktemp) && trap "rm -f $script" EXIT && curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh -o "$script" && bash "$script" && rm -f "$script" && trap - EXIT && export PATH="$HOME/.local/bin:$PATH" && exec vap start'
+```
+
+The remote service remains bound to loopback. The local browser can use the
+tokenized URL printed in the SSH session because the command forwards remote
+port `8899` to local port `8899`. Keep the session open; `Ctrl-C` stops VAP and
+closes the tunnel.
+
+For an existing installation, keep VAP bound to the loopback address, start it
+on the remote host, and create the tunnel separately:
 
 ```bash
 ssh -L 8899:127.0.0.1:8899 user@vap-host
