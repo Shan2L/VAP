@@ -63,13 +63,13 @@ Run the following on your local machine after replacing `{user}` and
 `{hostname}`:
 
 ```bash
-ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} 'script=$(mktemp) && trap "rm -f $script" EXIT && curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh -o "$script" && bash "$script" && rm -f "$script" && trap - EXIT && export PATH="$HOME/.local/bin:$PATH" && exec vap start'
+ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} \
+  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start'
 ```
 
 This single SSH command:
 
 - downloads and executes the bootstrap installer on the remote host;
-- adds the remote user bin directory to `PATH` for the current session;
 - starts VAP on remote `127.0.0.1:8899`;
 - forwards it to local `127.0.0.1:8899`.
 

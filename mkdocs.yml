@@ -61,9 +61,8 @@ markdown_extensions:
       alternate_style: true
 
 nav:
-  - Home: index.md
+  - User Guide: index.md
   - Deployment and Technical Report: deployment.md
-  - User Guide: user-guide.md
   - Third-Party Notices: THIRD_PARTY_NOTICES.md
 
 copyright: Copyright &copy; VAP contributors

@@ -275,7 +275,8 @@ To install, start, and tunnel VAP in one command, replace `{user}` and
 `{hostname}` and run locally:
 
 ```bash
-ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} 'script=$(mktemp) && trap "rm -f $script" EXIT && curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh -o "$script" && bash "$script" && rm -f "$script" && trap - EXIT && export PATH="$HOME/.local/bin:$PATH" && exec vap start'
+ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} \
+  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start'
 ```
 
 The remote service remains bound to loopback. The local browser can use the

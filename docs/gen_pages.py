@@ -4,6 +4,7 @@ import mkdocs_gen_files
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = {
+    "index.md": ROOT / "USER_GUIDE.md",
     "deployment.md": ROOT / "DEPLOYMENT_AND_TECHNICAL_REPORT.md",
     "user-guide.md": ROOT / "USER_GUIDE.md",
     "THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",

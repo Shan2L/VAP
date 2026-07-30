@@ -28,7 +28,8 @@ The bootstrap installer keeps a managed source checkout at `~/.local/share/vap/s
 Replace `{user}` and `{hostname}`, then run this command on your local machine:
 
 ```bash
-ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} 'script=$(mktemp) && trap "rm -f $script" EXIT && curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh -o "$script" && bash "$script" && rm -f "$script" && trap - EXIT && export PATH="$HOME/.local/bin:$PATH" && exec vap start'
+ssh -t -L 8899:127.0.0.1:8899 {user}@{hostname} \
+  'curl -fsSL https://raw.githubusercontent.com/Shan2L/VAP/main/bootstrap.sh | bash && exec ~/.local/bin/vap start'
 ```
 
 The command installs VAP and starts it on the remote host while forwarding remote
