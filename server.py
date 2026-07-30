@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import atexit
-from collections import Counter, defaultdict
 import gzip
 import io
 import json
@@ -16,8 +15,9 @@ import threading
 import time
 import uuid
 import zipfile
-from http.client import HTTPConnection
+from collections import Counter, defaultdict
 from http import HTTPStatus
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any

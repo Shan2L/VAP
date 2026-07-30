@@ -1,16 +1,19 @@
-from datetime import datetime
+import argparse
 import glob
 import json
-import os
 import logging
-import socket
-import time
-import requests
-import argparse
-import signal
-import shutil
+import os
 import shlex
+import shutil
+import signal
+import socket
 import subprocess
+import time
+from datetime import datetime
+
+import docker
+import requests
+from docker.types import Mount, Ulimit
 
 from config import VAPConfig
 from runtime_paths import (
@@ -23,9 +26,6 @@ from runtime_paths import (
 )
 from trace_fusion import fuse_traces
 from validation import PERFETTO_PORT, validate_config_or_raise
-
-import docker
-from docker.types import Mount, Ulimit
 
 logger = logging.getLogger("VAP")
 
