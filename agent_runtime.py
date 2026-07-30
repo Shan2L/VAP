@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 AGENT_BASE_URL = os.getenv("VAP_LLM_BASE_URL", "https://llm-api.amd.com/OpenAI")
-AGENT_MODEL = os.getenv("VAP_LLM_MODEL", "gpt-5.5")
+DEFAULT_AGENT_MODEL = "gpt-5.6-sol"
+AGENT_MODEL = os.getenv("VAP_LLM_MODEL", DEFAULT_AGENT_MODEL)
 AGENT_ENV_KEY_NAME = "VAP_LLM_SUBSCRIPTION_KEY"
 AGENT_TIMEOUT_SEC = float(os.getenv("VAP_LLM_TIMEOUT_SEC", "180"))
 AGENT_MAX_TOOL_ROUNDS = int(os.getenv("VAP_AGENT_MAX_TOOL_ROUNDS", "8"))

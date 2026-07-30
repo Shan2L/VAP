@@ -67,6 +67,7 @@ extra_javascript:
 nav:
   - Overview: index.md
   - User Guide: user-guide.md
+  - Agent and Skills: agent.md
   - Deployment and Technical Report: deployment.md
   - Third-Party Notices: THIRD_PARTY_NOTICES.md
 

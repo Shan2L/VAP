@@ -21,6 +21,7 @@
 </div>
 
 [Open the User Guide](user-guide.md){ .md-button .md-button--primary }
+[Agent and Skills](agent.md){ .md-button }
 [Deployment and Architecture](deployment.md){ .md-button }
 
 ---
@@ -126,6 +127,8 @@ trusted network.
 
 - Start with the [User Guide](user-guide.md) for installation, configuration,
   Web UI, CLI, Agent usage, outputs, and troubleshooting.
+- Read [Agent and Skills](agent.md) for the reasoning layer, tool safety model,
+  approval flow, and TorchProfilerTraceSkill.
 - Use the [Deployment and Technical Report](deployment.md) for architecture,
   security boundaries, systemd operation, lifecycle behavior, and production
   readiness.

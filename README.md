@@ -4,7 +4,11 @@
 
 VAP is a lightweight tool for deploying a vLLM service, running benchmark workloads, collecting profiler output, and viewing run logs through a simple web UI.
 
-For day-to-day operation, see the [User Guide](USER_GUIDE.md). For a production-oriented installation guide, deployment topology, operating procedures, and architecture report, see [VAP Deployment and Technical Report](DEPLOYMENT_AND_TECHNICAL_REPORT.md).
+For day-to-day operation, see the [User Guide](USER_GUIDE.md). For the reasoning
+layer, tool safety model, and trace-analysis workflow, see
+[Agent and Skills](AGENT_GUIDE.md). For a production-oriented installation
+guide, deployment topology, operating procedures, and architecture report, see
+[VAP Deployment and Technical Report](DEPLOYMENT_AND_TECHNICAL_REPORT.md).
 
 The project includes:
 
@@ -176,6 +180,9 @@ Multi-rank PyTorch JSON trace fusion is built into VAP and uses only the Python 
 ## Agent Chat
 
 The Agent panel is a Hermes-style VAP tool agent specialized for vLLM profiling. It starts by asking which model you want to profile, then guides you through model paths, Docker/GPU settings, tensor parallel size, benchmark shape, profiler options, validation, and final run approval. It uses an AMD OpenAI-compatible endpoint for reasoning, but VAP operations are exposed through explicit backend tools instead of UI automation.
+
+See [Agent and Skills](AGENT_GUIDE.md) for why the Agent exists, its tools,
+approval boundaries, and the TorchProfilerTraceSkill workflow.
 
 Configure the subscription key before starting the server:
 

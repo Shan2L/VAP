@@ -579,6 +579,9 @@ class FrontendFallbackTests(unittest.TestCase):
 
 
 class TraceSkillSchemaTests(unittest.TestCase):
+    def test_default_agent_model_is_gpt_5_6_sol(self) -> None:
+        self.assertEqual(agent_runtime.DEFAULT_AGENT_MODEL, "gpt-5.6-sol")
+
     def test_registered_query_enum_matches_skill_queries(self) -> None:
         runtime = agent_runtime.VAPAgentRuntime()
 

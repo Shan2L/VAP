@@ -386,6 +386,9 @@ Each log panel supports a separate download.
 
 ## 7. Using the Agent
 
+For the Agent architecture, complete tool inventory, approval model, and Skill
+workflow, see [Agent and Skills](https://shan2l.github.io/VAP/agent/).
+
 The Agent can help you:
 
 - Read and explain the current configuration.
@@ -415,7 +418,7 @@ Optional environment variables:
 
 ```bash
 export VAP_LLM_BASE_URL="https://llm-api.amd.com/OpenAI"
-export VAP_LLM_MODEL="gpt-5.5"
+export VAP_LLM_MODEL="gpt-5.6-sol"
 export VAP_LLM_TIMEOUT_SEC=180
 export VAP_AGENT_MAX_TOOL_ROUNDS=8
 ```
