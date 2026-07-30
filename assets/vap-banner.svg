@@ -1,52 +1,71 @@
-<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">VAP</title>
-  <desc id="desc">Cyberpunk neon banner for VAP, a vLLM profiling control plane.</desc>
+<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">VAP — vLLM profiling control plane</title>
+  <desc id="desc">A light technical banner showing VAP and its profiling workflow from configuration to visualization.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="360" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#05030f"/>
-      <stop offset="0.46" stop-color="#101a4a"/>
-      <stop offset="1" stop-color="#2d063d"/>
+    <linearGradient id="background" x1="64" y1="24" x2="1136" y2="296" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EEF5FF"/>
     </linearGradient>
-    <linearGradient id="neon" x1="214" y1="71" x2="982" y2="243" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#22d3ee"/>
-      <stop offset="0.45" stop-color="#8b5cf6"/>
-      <stop offset="1" stop-color="#fb2f92"/>
-    </linearGradient>
-    <radialGradient id="cyanGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(241 82) rotate(33.8) scale(366 198)">
-      <stop stop-color="#22d3ee" stop-opacity="0.46"/>
-      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="pinkGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(963 262) rotate(157.4) scale(389 217)">
-      <stop stop-color="#fb2f92" stop-opacity="0.44"/>
-      <stop offset="1" stop-color="#fb2f92" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="softGlow" x="-25%" y="-45%" width="150%" height="190%" color-interpolation-filters="sRGB">
-      <feGaussianBlur stdDeviation="8" result="blur"/>
-      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.13 0 0 0 0 0.82 0 0 0 0 0.93 0 0 0 0.9 0" result="cyan"/>
-      <feMerge>
-        <feMergeNode in="cyan"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
-      <path d="M44 0H0V44" stroke="#40E7FF" stroke-opacity="0.13" stroke-width="1"/>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.2" fill="#94A3B8" fill-opacity="0.16"/>
     </pattern>
   </defs>
-  <rect width="1200" height="360" rx="28" fill="url(#bg)"/>
-  <rect width="1200" height="360" rx="28" fill="url(#cyanGlow)"/>
-  <rect width="1200" height="360" rx="28" fill="url(#pinkGlow)"/>
-  <rect x="18" y="18" width="1164" height="324" rx="22" fill="url(#grid)" opacity="0.72"/>
-  <path d="M90 266L231 94H396L532 266H640L781 94H946L1110 266" stroke="url(#neon)" stroke-width="3" stroke-linecap="round" stroke-opacity="0.82"/>
-  <path d="M80 284H1120" stroke="#22d3ee" stroke-opacity="0.35"/>
-  <path d="M150 304H488" stroke="#fb2f92" stroke-opacity="0.55" stroke-width="3" stroke-linecap="round"/>
-  <path d="M712 304H1050" stroke="#22d3ee" stroke-opacity="0.55" stroke-width="3" stroke-linecap="round"/>
-  <g filter="url(#softGlow)">
-    <text x="600" y="181" text-anchor="middle" font-family="Inter, Orbitron, Rajdhani, Arial, sans-serif" font-size="116" font-weight="900" letter-spacing="24" fill="url(#neon)">VAP</text>
+
+  <rect x="1" y="1" width="1198" height="318" rx="24" fill="url(#background)" stroke="#D9E4F2" stroke-width="2"/>
+  <rect x="24" y="24" width="1152" height="272" rx="18" fill="url(#dots)"/>
+
+  <circle cx="1090" cy="52" r="88" fill="#DBEAFE" fill-opacity="0.55"/>
+  <circle cx="1138" cy="270" r="58" fill="#E0E7FF" fill-opacity="0.62"/>
+  <circle cx="62" cy="284" r="44" fill="#E0F2FE" fill-opacity="0.7"/>
+
+  <g transform="translate(70 56)">
+    <rect width="82" height="28" rx="14" fill="#E0EAFF"/>
+    <circle cx="17" cy="14" r="5" fill="#2563EB"/>
+    <text x="31" y="19" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4" fill="#334155">PROFILE</text>
+
+    <text x="0" y="114" font-family="Inter, Arial, sans-serif" font-size="88" font-weight="800" letter-spacing="-4" fill="#172033">VAP</text>
+    <rect x="2" y="130" width="64" height="5" rx="2.5" fill="#2563EB"/>
+    <text x="0" y="173" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="700" letter-spacing="1.2" fill="#334155">vLLM PROFILING CONTROL PLANE</text>
+    <text x="0" y="207" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="500" fill="#64748B">Validated runs. Reproducible traces. Actionable evidence.</text>
   </g>
-  <text x="600" y="226" text-anchor="middle" font-family="Inter, Rajdhani, Arial, sans-serif" font-size="25" font-weight="700" letter-spacing="5" fill="#DDFBFF">NEON CONTROL PLANE FOR VLLM PROFILING</text>
-  <text x="600" y="265" text-anchor="middle" font-family="Inter, Rajdhani, Arial, sans-serif" font-size="18" font-weight="600" letter-spacing="3" fill="#A7F3FF" opacity="0.9">DEPLOY / BENCHMARK / PROFILE / TRACE / VISUALIZE</text>
-  <circle cx="94" cy="78" r="6" fill="#22d3ee"/>
-  <circle cx="1106" cy="78" r="6" fill="#fb2f92"/>
-  <circle cx="94" cy="282" r="6" fill="#8b5cf6"/>
-  <circle cx="1106" cy="282" r="6" fill="#22d3ee"/>
+
+  <g transform="translate(575 54)">
+    <rect width="550" height="212" rx="18" fill="#FFFFFF" fill-opacity="0.86" stroke="#D6E2F0"/>
+    <text x="28" y="36" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.3" fill="#64748B">PROFILE WORKFLOW</text>
+
+    <path d="M52 91H498" stroke="#B8C7DC" stroke-width="2"/>
+    <path d="M143 86L151 91L143 96" stroke="#64748B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M250 86L258 91L250 96" stroke="#64748B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M357 86L365 91L357 96" stroke="#64748B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M464 86L472 91L464 96" stroke="#64748B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <g font-family="Inter, Arial, sans-serif" font-size="11" font-weight="700" text-anchor="middle">
+      <rect x="24" y="68" width="92" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/>
+      <text x="70" y="95" fill="#1D4ED8">CONFIG</text>
+
+      <rect x="131" y="68" width="92" height="46" rx="12" fill="#EEF2FF" stroke="#C7D2FE"/>
+      <text x="177" y="95" fill="#4338CA">DEPLOY</text>
+
+      <rect x="238" y="68" width="92" height="46" rx="12" fill="#ECFEFF" stroke="#A5F3FC"/>
+      <text x="284" y="95" fill="#0E7490">BENCHMARK</text>
+
+      <rect x="345" y="68" width="92" height="46" rx="12" fill="#F0F9FF" stroke="#BAE6FD"/>
+      <text x="391" y="95" fill="#0369A1">PROFILE</text>
+
+      <rect x="452" y="68" width="74" height="46" rx="12" fill="#F5F3FF" stroke="#DDD6FE"/>
+      <text x="489" y="95" fill="#6D28D9">VIEW</text>
+    </g>
+
+    <g transform="translate(28 145)">
+      <rect width="494" height="42" rx="11" fill="#F8FAFC" stroke="#E2E8F0"/>
+      <circle cx="22" cy="21" r="6" fill="#22C55E"/>
+      <text x="38" y="18" font-family="Inter, Arial, sans-serif" font-size="11" font-weight="700" fill="#334155">EVIDENCE READY</text>
+      <text x="38" y="31" font-family="Inter, Arial, sans-serif" font-size="10" fill="#64748B">Logs · multi-rank traces · TensorBoard · Perfetto · Agent analysis</text>
+      <path d="M424 27L438 13L450 23L468 7" stroke="#2563EB" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="424" cy="27" r="3" fill="#2563EB"/>
+      <circle cx="438" cy="13" r="3" fill="#2563EB"/>
+      <circle cx="450" cy="23" r="3" fill="#2563EB"/>
+      <circle cx="468" cy="7" r="3" fill="#2563EB"/>
+    </g>
+  </g>
 </svg>

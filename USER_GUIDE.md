@@ -1,8 +1,12 @@
 # VAP User Guide
 
+<div class="vap-lead" markdown>
+
 This guide is intended for users who need to deploy vLLM, run benchmarks, collect
 PyTorch profiler traces, and analyze the results with TensorBoard, Perfetto, or
 the VAP Agent.
+
+</div>
 
 ## 1. VAP Workflow
 
@@ -263,14 +267,26 @@ explicitly list the render devices.
 
 ### 5.4 `vllm_deploy_cfg`
 
-This object directly specifies the `vllm serve` arguments:
+This object is an **open-ended argument map** passed to `vllm serve`. It is not
+a fixed schema or an allowlist. You can add any CLI option supported by the
+vLLM version inside the configured Docker image.
+
+VAP applies only integration and safety rules:
 
 - Each key must start with `-`.
 - A `null` value represents a flag with no value.
 - `--host` and `--port` must match the benchmark configuration.
-- `-tp` specifies the tensor parallel size.
-- `--gpu-memory-utilization` controls the proportion of GPU memory used.
-- `--max-model-len` controls the maximum context length.
+- Keys cannot contain whitespace or shell metacharacters.
+- String values cannot contain whitespace or shell metacharacters.
+
+Common examples, not the complete set of accepted parameters:
+
+- `-tp`: tensor parallel size;
+- `--gpu-memory-utilization`: GPU memory utilization target;
+- `--max-model-len`: maximum context length;
+- `--dtype`: model data type;
+- `--max-num-seqs`: maximum number of concurrent sequences;
+- `--disable-log-requests`: an example flag represented with a `null` value.
 
 Example:
 
@@ -280,9 +296,15 @@ Example:
   "--port": 8080,
   "--gpu-memory-utilization": 0.9,
   "--max-model-len": 32768,
+  "--dtype": "auto",
+  "--disable-log-requests": null,
   "-tp": 2
 }
 ```
+
+The Web UI key/value editor can add or remove these options without a VAP code
+change. VAP validates safe construction of the command, but the installed vLLM
+version remains the authority on whether an option name and value are valid.
 
 `--trust-remote-code` executes code from the model repository inside a privileged
 container. Include it only when the model source is trusted:
@@ -292,6 +314,9 @@ container. Include it only when the model source is trusted:
 ```
 
 ### 5.5 `profiler_cfg`
+
+Unlike the two vLLM argument maps, `profiler_cfg` is a fixed, typed VAP
+configuration section. Unknown fields are rejected.
 
 - `profiler`: Usually set to `torch`.
 - `torch_profiler_dir`: Profiler output directory inside the container.
@@ -309,7 +334,9 @@ overhead. Enable these options as needed for the issue being investigated.
 
 ### 5.6 `vllm_bench_cfg`
 
-This object specifies the `vllm bench serve` arguments. Common fields include:
+This object is another **open-ended argument map**, passed to
+`vllm bench serve`. The fields below are common examples rather than the only
+accepted parameters:
 
 - `--backend`
 - `--host`
@@ -322,7 +349,10 @@ This object specifies the `vllm bench serve` arguments. Common fields include:
 - `--num-prompts`
 - `--request-rate`
 
-The deployment and benchmark values for `--host` and `--port` must match exactly.
+You may add any additional benchmark option supported by the vLLM version in the
+Docker image. Keys and values follow the same safety rules as
+`vllm_deploy_cfg`. The deployment and benchmark values for `--host` and
+`--port` must match exactly.
 
 ## 6. Using the Web UI
 

@@ -1,5 +1,22 @@
 # VAP
 
+<div class="vap-hero" markdown>
+
+![VAP — vLLM profiling control plane](assets/vap-banner.svg){ .vap-banner }
+
+<p class="vap-kicker">vLLM profiling control plane</p>
+
+## From model deployment to performance evidence
+
+Configure, validate, benchmark, profile, and inspect a trusted vLLM workload
+without stitching together a different script for every stage.
+
+[Open the User Guide](user-guide.md){ .md-button .md-button--primary }
+[Agent and Skills](agent.md){ .md-button }
+[Deployment and Architecture](deployment.md){ .md-button }
+
+</div>
+
 <div class="grid cards" markdown>
 
 -   **What is VAP?**
@@ -19,10 +36,6 @@
     image, validate the environment, then run and inspect the generated evidence.
 
 </div>
-
-[Open the User Guide](user-guide.md){ .md-button .md-button--primary }
-[Agent and Skills](agent.md){ .md-button }
-[Deployment and Architecture](deployment.md){ .md-button }
 
 ---
 

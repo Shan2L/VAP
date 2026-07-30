@@ -1,5 +1,7 @@
 # VAP Agent and Skills
 
+<div class="vap-lead" markdown>
+
 The VAP Agent is an optional reasoning and orchestration layer for vLLM
 profiling. It helps users move from a profiling question to a validated run and
 then from raw logs and traces to evidence-backed performance findings.
@@ -7,6 +9,8 @@ then from raw logs and traces to evidence-backed performance findings.
 The Agent does not replace VAP's deterministic backend. Configuration
 validation, resource checks, process control, Docker execution, file access, and
 approval enforcement remain implemented in Python.
+
+</div>
 
 ## Why VAP Includes an Agent
 
@@ -71,6 +75,19 @@ flowchart LR
 
 The model can propose an action, but it cannot bypass schemas, validation,
 approval, path restrictions, or process lifecycle controls.
+
+### Custom vLLM Arguments
+
+The Agent must treat `vllm_deploy_cfg` and `vllm_bench_cfg` as open-ended CLI
+argument maps. The options shown in examples are not a fixed allowlist.
+
+The Agent can preserve or propose additional options supported by the vLLM
+version in the selected image, but it must:
+
+- preserve existing custom options unless the user asks to remove them;
+- keep deploy and benchmark host/port values consistent;
+- follow VAP's key and value safety rules;
+- explain that final option compatibility is determined by vLLM, not the LLM.
 
 ## Typical Agent Workflow
 

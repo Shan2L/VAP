@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/vap-banner.svg" alt="VAP - Neon Control Plane for vLLM Profiling" width="100%" />
+  <img src="assets/vap-banner.svg" alt="VAP - vLLM Profiling Control Plane" width="100%" />
 </p>
 
 VAP is a lightweight tool for deploying a vLLM service, running benchmark workloads, collecting profiler output, and viewing run logs through a simple web UI.
@@ -143,6 +143,12 @@ vap clean
 The web UI does not overwrite the original config when starting a run. It sends the current form data to the backend, which creates a temporary config file under `~/.vap/tmp/configs/` for that run.
 
 The deploy and benchmark `--host` / `--port` values should stay consistent. The UI keeps these fields synchronized automatically.
+
+`vllm_deploy_cfg` and `vllm_bench_cfg` are open-ended CLI argument maps, not
+fixed parameter allowlists. The documented fields are examples; users can add
+any option supported by the vLLM version in the selected image through the UI
+key/value editor. VAP validates safe command construction, while vLLM validates
+the option semantics.
 
 `profiler_cfg.tensorboard_port` controls TensorBoard. Perfetto Trace Processor
 uses local port `9001`. If that optional port is unavailable, validation shows a

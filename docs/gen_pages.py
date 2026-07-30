@@ -8,6 +8,7 @@ PAGES = {
     "user-guide.md": ROOT / "USER_GUIDE.md",
     "agent.md": ROOT / "AGENT_GUIDE.md",
     "THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
+    "assets/vap-banner.svg": ROOT / "assets/vap-banner.svg",
 }
 
 

@@ -2,6 +2,8 @@
 
 ## 1. Purpose of This Document
 
+<div class="vap-lead" markdown>
+
 This document is intended for personnel who deploy, operate, and maintain VAP. It covers:
 
 - A production-ready local deployment approach;
@@ -13,6 +15,8 @@ This document is intended for personnel who deploy, operate, and maintain VAP. I
 VAP automates vLLM service deployment, benchmarking, Torch Profiler data collection, trace merging, and visualization with TensorBoard and Perfetto.
 
 The current recommendation is to deploy VAP as a **local operations tool for trusted users**, with the service listening on `127.0.0.1` and remote access provided through an SSH tunnel. Do not expose it directly to the public internet.
+
+</div>
 
 ---
 
@@ -204,27 +208,32 @@ After `example-config.json` is modified, the frontend retrieves the latest defau
 
 `vllm_deploy_cfg`
 
-- vLLM Serve parameters.
+- Open-ended key/value map passed to `vllm serve`, not a fixed parameter
+  allowlist.
+- Operators may add any option supported by the vLLM version in the selected
+  Docker image.
 - `--host` and `--port` must match the benchmark configuration.
 - `--trust-remote-code` triggers a security warning.
 
 `vllm_bench_cfg`
 
-- `vllm bench serve` parameters.
-- Includes the endpoint, dataset, input and output lengths, concurrency, and request rate.
+- Open-ended key/value map passed to `vllm bench serve`.
+- Endpoint, dataset, lengths, concurrency, and request rate are examples rather
+  than the complete accepted parameter set.
+- Additional options require no VAP code change when the installed vLLM version
+  supports them.
 
 `profiler_cfg`
 
-- Torch Profiler enablement and collection parameters.
+- Fixed, typed VAP section for Torch Profiler enablement and collection
+  parameters; unknown fields are rejected.
 - `torch_profiler_dir` is fixed at `/app/VAP/log/vllm-profile`.
 - `tensorboard_port` configures the TensorBoard port.
 
 `container_cfg`
 
-- Docker image name and tag;
-- GPU devices;
-- Host mounts;
-- Environment variables.
+- Fixed VAP structure containing Docker image name and tag, extensible device and
+  mount lists, and an extensible environment-variable map.
 
 `distributed_cfg`
 

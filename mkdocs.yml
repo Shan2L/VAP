@@ -13,10 +13,14 @@ theme:
   features:
     - navigation.instant
     - navigation.sections
+    - navigation.expand
+    - navigation.tracking
     - navigation.top
     - navigation.footer
+    - toc.follow
     - content.code.copy
     - content.code.annotate
+    - content.tooltips
     - search.suggest
     - search.highlight
   palette:
@@ -63,6 +67,9 @@ markdown_extensions:
 extra_javascript:
   - https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js
   - javascripts/mermaid.js
+
+extra_css:
+  - stylesheets/extra.css
 
 nav:
   - Overview: index.md
