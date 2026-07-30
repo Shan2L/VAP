@@ -529,27 +529,16 @@ OpenAI-Compatible Agent
 
 ### 9.3 Configuration Data Flow
 
-```text
-example-config.json
-        │
-        ├── Frontend default configuration
-        │
-~/.vap/config.json
-        │
-        ├── User's current configuration
-        │
-Browser Draft
-        │
-        └── Restored when the source revision matches
-                │
-                ▼
-          Current UI form
-                │
-                ▼
-~/.vap/tmp/configs/vap-config-*.json
-                │
-                ▼
-            main.py
+```mermaid
+flowchart TD
+    Example["example-config.json"] --> FrontendDefault["Frontend defaults"]
+    UserConfig["~/.vap/config.json"] --> CurrentForm["Current UI form"]
+    BrowserDraft["Browser draft"] -->|"Source revision matches"| CurrentForm
+    FrontendDefault -->|"No saved config"| CurrentForm
+    CurrentForm --> Validation["Backend validation"]
+    Validation --> TempConfig["~/.vap/tmp/configs/vap-config-*.json"]
+    TempConfig --> Workflow["main.py workflow process"]
+    Workflow --> RunSnapshot["Timestamped run config snapshot"]
 ```
 
 This design prevents the Web UI from directly overwriting the user's configuration while ensuring that every run has an independent configuration snapshot.
@@ -569,6 +558,30 @@ This design prevents the Web UI from directly overwriting the user's configurati
 11. The Workflow stops and removes the container.
 12. Trace Fusion merges traces from multiple ranks.
 13. TensorBoard and the Perfetto Trace Processor are started.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    participant Workflow
+    participant Docker
+    participant VLLM as vLLM
+    participant Bench as Benchmark
+
+    Client->>Server: POST run request
+    Server->>Server: Validate and snapshot config
+    Server->>Workflow: Start isolated subprocess
+    Workflow->>Docker: Create vLLM container
+    Docker->>VLLM: Launch service
+    Workflow->>VLLM: Poll health
+    Workflow->>VLLM: Start profiler
+    Workflow->>Bench: Run workload
+    Bench->>VLLM: Send inference requests
+    Workflow->>VLLM: Stop profiler
+    Workflow->>Docker: Stop and remove container
+    Workflow-->>Server: Logs, traces, and visualization state
+    Server-->>Client: Status and downloadable artifacts
+```
 
 ### 9.5 Security Model
 
@@ -605,6 +618,27 @@ Supply chain:
 - The installer pins the `uv` and Perfetto versions;
 - Downloaded content is verified with SHA256 checksums;
 - Bootstrap refuses to overwrite an unrecognized source directory or one with local modifications.
+
+```mermaid
+flowchart LR
+    Client["Browser or API client"] --> Token["Session token"]
+    Token --> RequestChecks["Origin and JSON checks"]
+    RequestChecks --> Server["VAP control service"]
+
+    subgraph ControlPlane [Control plane]
+        Server --> ConfigFiles["0600 config snapshots"]
+        Server --> RunLock["Single-run lifecycle lock"]
+        Server --> Workflow["Workflow subprocess"]
+    end
+
+    subgraph PrivilegedBoundary [Privileged container boundary]
+        Workflow --> Docker["Docker Engine"]
+        Docker --> Devices["ROCm devices and host network"]
+        Docker --> ModelMount["Trusted model and data mounts"]
+    end
+
+    Workflow --> Artifacts["Bounded logs and trace archives"]
+```
 
 ### 9.6 Lifecycle and Failure Handling
 

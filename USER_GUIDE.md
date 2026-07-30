@@ -17,6 +17,19 @@ A complete run performs the following steps in order:
 7. Stop and remove the vLLM container for this run.
 8. Merge multi-rank JSON traces, then start TensorBoard and the Perfetto Trace Processor.
 
+```mermaid
+flowchart TD
+    Configure["Edit model, image, devices, and workload"] --> Validate["Validate config and resources"]
+    Validate -->|"Needs changes"| Configure
+    Validate -->|"Ready"| Deploy["Start vLLM container"]
+    Deploy --> Health["Wait for health endpoint"]
+    Health --> Profile["Start Torch Profiler"]
+    Profile --> Benchmark["Run benchmark"]
+    Benchmark --> StopProfile["Stop profiler and container"]
+    StopProfile --> Artifacts["Save logs and trace artifacts"]
+    Artifacts --> Inspect["Inspect in TensorBoard or Perfetto"]
+```
+
 VAP supports both Web UI and CLI workflows. New users should start with the Web UI.
 
 ## 2. System Requirements
@@ -454,6 +467,20 @@ vllm_deploy.log
 vllm_bench.log
 visualization_pids.json
 vllm-profile/
+```
+
+```mermaid
+flowchart LR
+    Run["Timestamped run directory"] --> Snapshot["config.json"]
+    Run --> VapLog["vap_log.txt"]
+    Run --> DeployLog["vllm_deploy.log"]
+    Run --> BenchLog["vllm_bench.log"]
+    Run --> RankTraces["Per-rank profiler traces"]
+    RankTraces --> Fusion["Built-in trace fusion"]
+    Fusion --> Merged["merged_trace.json.gz"]
+    RankTraces --> TensorBoard["TensorBoard"]
+    Merged --> Perfetto["Perfetto"]
+    RankTraces --> Archive["Downloadable trace archive"]
 ```
 
 If multiple rank traces exist, VAP merges them using its built-in standard-library
