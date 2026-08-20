@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from trace_fusion import fuse_traces, load_trace
+from vap.trace_fusion import fuse_traces, load_trace
 
 
 def rank_trace() -> dict:

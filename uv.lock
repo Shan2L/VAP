@@ -1208,7 +1208,7 @@ wheels = [
 [[package]]
 name = "vap"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "docker" },
     { name = "openai" },

@@ -13,9 +13,11 @@ guide, deployment topology, operating procedures, and architecture report, see
 
 The project includes:
 
-- `main.py`: runs the VAP workflow, including vLLM deployment, benchmark execution, profiling, TensorBoard, and Perfetto Trace Processor startup.
-- `server.py`: starts a local configuration and control service.
-- `public/index.html`: provides the browser UI for editing configs, validating resources, starting/stopping runs, viewing logs, and downloading trace archives.
+- `vap/cli.py`: `vap start/run/clean/uninstall` entry point.
+- `vap/server/`: local HTTP control service, Web UI, authentication, and run status.
+- `vap/main.py`: vLLM deployment, benchmark, Torch Profiler, TensorBoard, and Perfetto.
+- `vap/agent/`: optional LLM agent and approval tools.
+- `public/index.html`: browser UI for editing configs, validating resources, starting/stopping runs, viewing logs, and downloading trace archives.
 - `example-config.json`: example configuration template.
 
 ## Setup

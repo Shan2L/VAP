@@ -4,9 +4,9 @@ import argparse
 import os
 from types import SimpleNamespace
 
-import main as vap_workflow
-import server as vap_server
-from runtime_paths import APP_DIR, VAP_CONFIG_PATH, VAP_LOGS_DIR, ensure_vap_home
+from . import main as vap_workflow
+from . import server as vap_server
+from .runtime_paths import APP_DIR, VAP_CONFIG_PATH, VAP_LOGS_DIR, ensure_vap_home
 
 
 def main(argv: list[str] | None = None) -> None:

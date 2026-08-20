@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from config import TORCH_PROFILER_DIR, VAPConfig
+from .config import TORCH_PROFILER_DIR, VAPConfig
 
 SHELL_UNSAFE_PATTERN = re.compile(r"[\n\r;&|`$<>]")
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

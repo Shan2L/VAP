@@ -22,9 +22,20 @@ def install_docker_stub() -> None:
         return
 
     docker_module = types.ModuleType("docker")
+    docker_module.__path__ = []
     docker_types = types.ModuleType("docker.types")
+    docker_errors = types.ModuleType("docker.errors")
+    docker_models = types.ModuleType("docker.models")
+    docker_models.__path__ = []
+    docker_containers = types.ModuleType("docker.models.containers")
 
     class DockerClient:
+        pass
+
+    class DockerException(Exception):
+        pass
+
+    class ImageNotFound(DockerException):
         pass
 
     class Mount:
@@ -37,29 +48,33 @@ def install_docker_stub() -> None:
 
     docker_module.DockerClient = DockerClient
     docker_module.from_env = Mock()
-    docker_module.errors = types.SimpleNamespace(
-        ImageNotFound=type("ImageNotFound", (Exception,), {})
-    )
-    docker_module.models = types.SimpleNamespace(
-        containers=types.SimpleNamespace(Container=object)
-    )
+    docker_errors.DockerException = DockerException
+    docker_errors.ImageNotFound = ImageNotFound
+    docker_module.errors = docker_errors
+    docker_containers.Container = object
+    docker_models.containers = docker_containers
+    docker_module.models = docker_models
     docker_types.Mount = Mount
     docker_types.Ulimit = Ulimit
     sys.modules["docker"] = docker_module
     sys.modules["docker.types"] = docker_types
+    sys.modules["docker.errors"] = docker_errors
+    sys.modules["docker.models"] = docker_models
+    sys.modules["docker.models.containers"] = docker_containers
 
 
 install_docker_stub()
 
-import agent_runtime
-import cli
-import config
-import main
-import runtime_paths
-import server
-import validation
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+from vap import agent_runtime, cli, config, main, runtime_paths, server, validation
+from vap.agent import tools as agent_tools
+from vap.pipelines import torch_profiling_pipeline as torch_pipeline
+from vap.pipelines.containerRunner import ContainerRunner
+from vap.server import artifacts as server_artifacts
+from vap.server import auth as server_auth
+from vap.server import checks as server_checks
+from vap.server import settings as server_settings
 
 
 def example_payload() -> dict:
@@ -217,7 +232,7 @@ class ServerAuthorizationTests(unittest.TestCase):
 
     def test_wildcard_bind_prints_local_hostname_and_ip_candidates(self) -> None:
         with patch.object(
-            server,
+            server_auth,
             "discover_network_hosts",
             return_value=["vap-host.example", "10.0.0.8"],
         ):
@@ -243,7 +258,7 @@ class ServerAuthorizationTests(unittest.TestCase):
 
     def test_perfetto_port_check_is_non_blocking(self) -> None:
         with patch.object(
-            server,
+            server_checks,
             "is_local_port_available",
             side_effect=lambda port: port != server.PERFETTO_PORT,
         ):
@@ -303,11 +318,11 @@ class ServerAuthorizationTests(unittest.TestCase):
         payload["profiler_cfg"]["torch_profiler_dir"] = "/tmp/other-profile"
 
         with (
-            patch.object(server, "save_temp_config") as save_temp,
-            patch.object(server, "start_vap_run") as start_run,
+            patch.object(agent_tools, "save_temp_config") as save_temp,
+            patch.object(agent_tools, "start_vap_run") as start_run,
             self.assertRaisesRegex(ValueError, "torch_profiler_dir.*immutable"),
         ):
-            server.start_agent_run({"config": payload})
+            agent_tools.start_agent_run({"config": payload})
 
         save_temp.assert_not_called()
         start_run.assert_not_called()
@@ -326,7 +341,7 @@ class FileBoundaryTests(unittest.TestCase):
             secret.write_text("do-not-archive", encoding="utf-8")
             (profile_dir / "secret-link").symlink_to(secret)
 
-            with patch.object(server, "LOGS_DIR", logs_dir):
+            with patch.object(server_settings, "LOGS_DIR", logs_dir):
                 _, content = server.build_current_profile_archive(str(run_dir))
 
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -338,8 +353,8 @@ class FileBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             temp_config_dir = Path(tmp) / "configs"
             with (
-                patch.object(server, "TEMP_CONFIG_DIR", temp_config_dir),
-                patch.object(server, "ensure_vap_home"),
+                patch.object(server_settings, "TEMP_CONFIG_DIR", temp_config_dir),
+                patch.object(server_artifacts, "ensure_vap_home"),
             ):
                 path = server.save_temp_config({"secret": "value"})
 
@@ -374,13 +389,13 @@ class RuntimeAndCliTests(unittest.TestCase):
         parsed = config.VAPConfig.model_validate(example_payload())
         with (
             patch.object(
-                main,
+                torch_pipeline,
                 "is_port_available",
-                side_effect=lambda port: port != main.PERFETTO_PORT,
+                side_effect=lambda port: port != validation.PERFETTO_PORT,
             ),
             self.assertLogs("VAP", level="WARNING") as logs,
         ):
-            main.check_port_availability(parsed)
+            torch_pipeline.check_port_availability(parsed)
 
         self.assertTrue(
             any(
@@ -395,16 +410,18 @@ class RuntimeAndCliTests(unittest.TestCase):
             trace_path = log_dir / "trace.json"
             trace_path.write_text('{"traceEvents": []}\n', encoding="utf-8")
             with (
-                patch.object(main, "find_tensorboard_command", return_value=None),
-                patch.object(main, "find_perfetto_trace", return_value=str(trace_path)),
+                patch.object(torch_pipeline, "find_tensorboard_command", return_value=None),
+                patch.object(torch_pipeline, "find_perfetto_trace", return_value=str(trace_path)),
                 patch.object(
-                    main, "find_trace_processor", return_value="/bin/trace_processor"
+                    torch_pipeline,
+                    "find_trace_processor",
+                    return_value="/bin/trace_processor",
                 ),
-                patch.object(main, "is_port_available", return_value=False),
-                patch.object(main.subprocess, "Popen") as popen,
+                patch.object(torch_pipeline, "is_port_available", return_value=False),
+                patch.object(torch_pipeline.subprocess, "Popen") as popen,
                 self.assertLogs("VAP", level="WARNING") as logs,
             ):
-                main.visualize_profile(parsed, str(log_dir), "127.0.0.1")
+                torch_pipeline.visualize_profile(parsed, str(log_dir), "127.0.0.1")
 
         popen.assert_not_called()
         self.assertTrue(
@@ -413,20 +430,23 @@ class RuntimeAndCliTests(unittest.TestCase):
 
     def test_profile_stop_runs_after_benchmark_failure(self) -> None:
         parsed = config.VAPConfig.model_validate(example_payload())
-        start_response = Mock()
-        stop_response = Mock()
-        container = Mock()
-        container.exec_run.side_effect = RuntimeError("benchmark crashed")
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.config = parsed
+        runner.container = Mock()
+        runner.container.exec_run.side_effect = [
+            (0, b""),
+            RuntimeError("benchmark crashed"),
+            (0, b""),
+        ]
 
-        with patch.object(
-            main.requests, "post", side_effect=[start_response, stop_response]
-        ) as post:
-            with self.assertRaisesRegex(RuntimeError, "benchmark crashed"):
-                main.bench_and_profile(parsed, container)
+        with self.assertRaisesRegex(RuntimeError, "benchmark crashed"):
+            runner.bench_and_profile()
 
-        self.assertEqual(post.call_count, 2)
-        start_response.raise_for_status.assert_called_once()
-        stop_response.raise_for_status.assert_called_once()
+        self.assertEqual(runner.container.exec_run.call_count, 3)
+        start_cmd = runner.container.exec_run.call_args_list[0].args[0][2]
+        stop_cmd = runner.container.exec_run.call_args_list[2].args[0][2]
+        self.assertIn("start_profile", start_cmd)
+        self.assertIn("stop_profile", stop_cmd)
 
     def test_cli_run_supplies_visualization_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -30,7 +30,7 @@ flowchart LR
     UI --> Server
     Server --> Validation[Pydantic and Resource Validation]
     Server --> TempConfig[Temporary Run Configuration]
-    Server --> Workflow[Workflow Process main.py]
+    Server --> Workflow[Workflow Process vap.main]
     Workflow --> Docker[Docker Engine]
     Docker --> VLLM[vLLM Container]
     Workflow --> Benchmark[vLLM Benchmark]
@@ -44,14 +44,14 @@ flowchart LR
 
 Core components:
 
-- `cli.py`: Provides the `vap start/run/clean/uninstall` commands.
-- `server.py`: Implements the local HTTP control service, Web UI, authentication, run status management, and Agent tool registration.
+- `vap/cli.py`: Provides the `vap start/run/clean/uninstall` commands.
+- `vap/server/`: Implements the local HTTP control service, Web UI, authentication, run status management, and Agent tool registration.
 - `public/index.html`: Provides configuration editing and validation, run controls, logs, and visualization entry points.
-- `config.py`: Defines strict Pydantic configuration models.
-- `validation.py`: Validates ports, parameters, security boundaries, and compatibility.
-- `main.py`: Implements the Docker, vLLM, benchmark, profiler, and visualization workflow.
-- `trace_fusion.py`: Merges multi-rank PyTorch traces.
-- `agent_runtime.py`: Implements the optional LLM Agent and approval tools.
+- `vap/config.py`: Defines strict Pydantic configuration models.
+- `vap/validation.py`: Validates ports, parameters, security boundaries, and compatibility.
+- `vap/main.py`: Implements the Docker, vLLM, benchmark, profiler, and visualization workflow.
+- `vap/trace_fusion.py`: Merges multi-rank PyTorch traces.
+- `vap/agent/`: Implements the optional LLM Agent and approval tools.
 - `skills/TorchProfilerTraceSkill/`: Provides trace analysis capabilities based on Perfetto SQL.
 
 ---
@@ -548,7 +548,7 @@ flowchart TD
     FrontendDefault -->|"No saved config"| CurrentForm
     CurrentForm --> Validation["Backend validation"]
     Validation --> TempConfig["~/.vap/tmp/configs/vap-config-*.json"]
-    TempConfig --> Workflow["main.py workflow process"]
+    TempConfig --> Workflow["vap.main workflow process"]
     Workflow --> RunSnapshot["Timestamped run config snapshot"]
 ```
 

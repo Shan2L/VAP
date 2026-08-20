@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "vap"
 version = "0.1.0"
@@ -10,8 +14,8 @@ dependencies = [
     "torch-tb-profiler>=0.4.3",
 ]
 
-[tool.setuptools]
-py-modules = ["agent_runtime", "cli", "config", "main", "runtime_paths", "server", "trace_fusion", "validation"]
+[tool.setuptools.packages.find]
+include = ["vap*"]
 
 [dependency-groups]
 dev = [
@@ -24,7 +28,9 @@ docs = [
 ]
 
 [project.scripts]
-vap = "cli:main"
+vap = "vap.cli:main"
 
 [tool.isort]
 profile = "black"
+src_paths = ["vap", "tests"]
+known_first_party = ["vap"]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(__file__).resolve().parents[1]
 VAP_HOME = Path(os.getenv("VAP_HOME", "~/.vap")).expanduser().resolve()
 VAP_BIN_DIR = VAP_HOME / "bin"
 VAP_LOGS_DIR = VAP_HOME / "logs"

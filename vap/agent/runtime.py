@@ -390,49 +390,28 @@ class VAPAgentRuntime:
         return normalized
 
     def _create_client(self, subscription_key: str):
-        try:
-            import openai
-        except ImportError as exc:
-            raise RuntimeError(
-                "OpenAI SDK is not installed. Run install.sh again."
-            ) from exc
+        from .llm import create_client
 
-        return openai.OpenAI(
-            base_url=AGENT_BASE_URL,
-            api_key="dummy",
-            timeout=AGENT_TIMEOUT_SEC,
-            default_headers={
-                "Ocp-Apim-Subscription-Key": subscription_key,
-                "user": self._user_header(),
-            },
-        )
+        return create_client(subscription_key)
 
     def _chat_completion(
         self,
-        client: Any,
+        client,
         *,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        messages: list[dict],
+        tools: list[dict] | None = None,
         max_completion_tokens: int,
         stream: bool = False,
-    ) -> Any:
-        try:
-            kwargs: dict[str, Any] = {
-                "model": AGENT_MODEL,
-                "messages": messages,
-                "max_completion_tokens": max_completion_tokens,
-                "stream": stream,
-            }
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-            return client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            if "timed out" in str(exc).lower():
-                raise TimeoutError(
-                    f"LLM request exceeded {AGENT_TIMEOUT_SEC:.0f}s. Try again, ask a narrower question, or increase VAP_LLM_TIMEOUT_SEC."
-                ) from exc
-            raise
+    ):
+        from .llm import chat_completion
+
+        return chat_completion(
+            client,
+            messages=messages,
+            tools=tools,
+            max_completion_tokens=max_completion_tokens,
+            stream=stream,
+        )
 
     def _create_pending_action(
         self, tool_name: str, arguments: dict[str, Any]
