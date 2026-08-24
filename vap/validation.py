@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .config import TORCH_PROFILER_DIR, VAPConfig
+from .config import PARALLEL_SIZE_ALIASES, TORCH_PROFILER_DIR, VAPConfig
 
 SHELL_UNSAFE_PATTERN = re.compile(r"[\n\r;&|`$<>]")
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -116,12 +116,61 @@ def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
             }
         )
 
+    clock_probe = config.clock_probe_cfg
+    distributed = config.distributed_cfg
+    if distributed is not None and distributed.enable:
+        if not distributed.worker_nodes:
+            errors.append(
+                {
+                    "path": "distributed_cfg.worker_nodes",
+                    "message": "Distributed mode requires at least one worker",
+                }
+            )
+        if len(set(distributed.worker_nodes)) != len(distributed.worker_nodes):
+            errors.append(
+                {
+                    "path": "distributed_cfg.worker_nodes",
+                    "message": "Worker nodes must be unique",
+                }
+            )
+    if clock_probe.enabled and not (distributed and distributed.enable):
+        errors.append(
+            {
+                "path": "clock_probe_cfg.enabled",
+                "message": "Clock probing requires distributed_cfg.enable=true",
+            }
+        )
+    if clock_probe.enabled and clock_probe.mode == "hardware":
+        if not clock_probe.hardware_interface:
+            errors.append(
+                {
+                    "path": "clock_probe_cfg.hardware_interface",
+                    "message": "Hardware mode requires a network interface",
+                }
+            )
+        if not clock_probe.hardware_phc_device:
+            errors.append(
+                {
+                    "path": "clock_probe_cfg.hardware_phc_device",
+                    "message": "Hardware mode requires a PHC device",
+                }
+            )
+
     local_vllm_port = (
         deploy_port
         if is_valid_port(deploy_port) and deploy_port == bench_port
         else None
     )
     errors.extend(validate_local_service_port_conflicts(config, local_vllm_port))
+    try:
+        config.parallel_world_size
+    except (TypeError, ValueError) as exc:
+        errors.append(
+            {
+                "path": "vllm_deploy_cfg.parallel_sizes",
+                "message": str(exc),
+            }
+        )
     errors.extend(validate_tensor_parallel_devices(config))
     errors.extend(validate_risky_config(config))
     return errors
@@ -138,6 +187,23 @@ def validate_local_service_port_conflicts(
             config.profiler_cfg.tensorboard_port,
         ),
     ]
+    distributed = config.distributed_cfg
+    if distributed is not None and distributed.enable:
+        ports.append(
+            (
+                "distributed_cfg.ray_port",
+                "Ray head port",
+                distributed.ray_port,
+            )
+        )
+    if config.clock_probe_cfg.enabled:
+        ports.append(
+            (
+                "clock_probe_cfg.port",
+                "Clock probe port",
+                config.clock_probe_cfg.port,
+            )
+        )
     if local_vllm_port is not None:
         ports.insert(
             0, ("vllm_deploy_cfg.--port", "vLLM service port", local_vllm_port)
@@ -168,25 +234,32 @@ def validate_local_service_port_conflicts(
 
 
 def validate_tensor_parallel_devices(config: VAPConfig) -> list[dict[str, str]]:
-    tp_value = config.vllm_deploy_cfg.get("-tp")
-    if tp_value is None:
+    tp_values = [
+        config.vllm_deploy_cfg[key]
+        for key in PARALLEL_SIZE_ALIASES["tensor"]
+        if config.vllm_deploy_cfg.get(key) is not None
+    ]
+    if not tp_values:
         return []
 
     try:
-        tensor_parallel_size = int(tp_value)
+        sizes = {int(value) for value in tp_values}
     except (TypeError, ValueError):
         return [
             {
-                "path": "vllm_deploy_cfg.-tp",
-                "message": "-tp must be a positive integer",
+                "path": "vllm_deploy_cfg.tensor_parallel_size",
+                "message": "Tensor parallel size must be a positive integer",
             }
         ]
+    if len(sizes) != 1:
+        return []
+    tensor_parallel_size = sizes.pop()
 
     if tensor_parallel_size < 1:
         return [
             {
-                "path": "vllm_deploy_cfg.-tp",
-                "message": "-tp must be a positive integer",
+                "path": "vllm_deploy_cfg.tensor_parallel_size",
+                "message": "Tensor parallel size must be a positive integer",
             }
         ]
 
@@ -195,9 +268,9 @@ def validate_tensor_parallel_devices(config: VAPConfig) -> list[dict[str, str]]:
     if tensor_parallel_size > visible_device_count:
         return [
             {
-                "path": "vllm_deploy_cfg.-tp",
+                "path": "vllm_deploy_cfg.tensor_parallel_size",
                 "message": (
-                    f"-tp={tensor_parallel_size} exceeds visible GPU device count "
+                    f"Tensor parallel size {tensor_parallel_size} exceeds visible GPU device count "
                     f"{visible_device_count}. Empty devices means all "
                     f"{DEFAULT_VISIBLE_DEVICE_COUNT} GPUs are visible."
                 ),
@@ -352,13 +425,6 @@ def build_security_warnings(config: VAPConfig) -> list[dict[str, str]]:
                 ),
             }
         )
-    if config.distributed_cfg is not None:
-        warnings.append(
-            {
-                "path": "distributed_cfg",
-                "message": "Distributed mode is unavailable; VAP will run locally.",
-            }
-        )
     if "--trust-remote-code" in config.vllm_deploy_cfg:
         warnings.append(
             {
@@ -404,6 +470,10 @@ def build_config_summary(config: VAPConfig) -> dict[str, Any]:
         "docker_image": config.docker_image,
         "vllm_host": config.vllm_host,
         "vllm_port": config.vllm_port,
-        "distributed": bool(distributed),
-        "node_count": distributed.num_nodes if distributed else 1,
+        "distributed": bool(distributed and distributed.enable),
+        "node_count": (
+            1 + len(distributed.worker_nodes)
+            if distributed and distributed.enable
+            else 1
+        ),
     }

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from vap.config import VAPConfig
+from vap.runners import DockerTarget
+from vap.runners.docker import create_docker_client
 from vap.server import settings
 from vap.validation import validate_config_payload
 
@@ -58,6 +61,31 @@ def check_config_ports(payload: dict[str, Any]) -> dict[str, Any]:
             "blocking": False,
         },
     ]
+    distributed = config.distributed_cfg
+    if distributed is not None and distributed.enable:
+        ports.insert(
+            2,
+            {
+                "name": "Ray head port",
+                "port": distributed.ray_port,
+                "available": is_local_port_available(distributed.ray_port),
+                "blocking": True,
+            },
+        )
+    if (
+        distributed is not None
+        and distributed.enable
+        and config.clock_probe_cfg.enabled
+    ):
+        ports.insert(
+            3,
+            {
+                "name": "Clock probe port",
+                "port": config.clock_probe_cfg.port,
+                "available": is_local_port_available(config.clock_probe_cfg.port),
+                "blocking": True,
+            },
+        )
     for item in ports:
         if item["available"]:
             item["message"] = f"Local port {item['port']} is available"
@@ -80,20 +108,24 @@ def check_config_machines(payload: dict[str, Any]) -> dict[str, Any]:
 
     config = VAPConfig.model_validate(payload)
     distributed = config.distributed_cfg
-    if distributed is None:
+    if distributed is None or not distributed.enable:
         return {
             "valid": True,
             "machines": [],
             "message": "Distributed machines are not enabled in the current config.",
         }
 
-    machines: list[dict[str, Any]] = []
-    nodes = [distributed.head_node, *distributed.worker_nodes]
-    for node in dict.fromkeys(nodes):
-        checks = [{"label": "SSH", "port": 22}]
-        if node == distributed.head_node:
-            checks.append({"label": "Ray", "port": distributed.ray_port})
-        machines.append(check_machine(node, checks))
+    nodes = list(dict.fromkeys(distributed.worker_nodes))
+    with ThreadPoolExecutor(max_workers=min(8, len(nodes))) as executor:
+        machines = list(
+            executor.map(
+                lambda node: check_machine(
+                    node,
+                    [{"label": "SSH", "port": 22}],
+                ),
+                nodes,
+            )
+        )
     return {"valid": True, "machines": machines}
 
 
@@ -122,6 +154,22 @@ def check_config_resources(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         check_docker_image(docker_image),
     ]
+    distributed_cfg = payload.get("distributed_cfg") or {}
+    worker_nodes = (
+        distributed_cfg.get("worker_nodes")
+        if distributed_cfg.get("enable")
+        and isinstance(distributed_cfg.get("worker_nodes"), list)
+        else []
+    )
+    unique_workers = list(dict.fromkeys(str(node) for node in worker_nodes if node))
+    if unique_workers:
+        with ThreadPoolExecutor(max_workers=min(8, len(unique_workers))) as executor:
+            checks.extend(
+                executor.map(
+                    lambda node: check_docker_image(docker_image, node),
+                    unique_workers,
+                )
+            )
 
     devices = container_cfg.get("devices") or []
     if not isinstance(devices, list):
@@ -215,13 +263,6 @@ def check_path(
             "message": "Path exists but is not a directory",
             "path": raw_path,
         }
-    if expect_dir is False and not path.exists():
-        return {
-            "name": name,
-            "ok": False,
-            "message": "File or device does not exist",
-            "path": raw_path,
-        }
     return {
         "name": name,
         "ok": True,
@@ -230,48 +271,69 @@ def check_path(
     }
 
 
-def check_docker_image(image: str) -> dict[str, Any]:
+def check_docker_image(
+    image: str,
+    hostname: str | None = None,
+) -> dict[str, Any]:
+    node = hostname or "local"
+    check_name = f"Docker image ({node})"
     if not image:
         return {
-            "name": "Local Docker image",
+            "name": check_name,
             "ok": False,
             "message": "Docker image config is empty",
             "image": image,
+            "node": node,
         }
     try:
-        import docker
         from docker.errors import DockerException, ImageNotFound
     except Exception as exc:
         return {
-            "name": "Local Docker image",
+            "name": check_name,
             "ok": False,
             "message": f"Cannot import Docker SDK: {exc}",
             "image": image,
+            "node": node,
         }
 
+    client = None
     try:
-        client = docker.from_env()
+        client = create_docker_client(DockerTarget(hostname=hostname))
         client.images.get(image)
         return {
-            "name": "Local Docker image",
+            "name": check_name,
             "ok": True,
-            "message": "Local Docker image exists",
+            "message": f"Docker image exists on {node}",
             "image": image,
+            "node": node,
         }
     except ImageNotFound:
         return {
-            "name": "Local Docker image",
+            "name": check_name,
             "ok": False,
-            "message": "Local Docker image does not exist. Pull or build it first.",
+            "message": f"Docker image does not exist on {node}. Pull or build it first.",
             "image": image,
+            "node": node,
         }
     except DockerException as exc:
         return {
-            "name": "Local Docker image",
+            "name": check_name,
             "ok": False,
-            "message": f"Docker daemon is unavailable or permission was denied: {exc}",
+            "message": f"Docker daemon on {node} is unavailable: {exc}",
             "image": image,
+            "node": node,
         }
+    except Exception as exc:
+        return {
+            "name": check_name,
+            "ok": False,
+            "message": f"Docker image check failed on {node}: {exc}",
+            "image": image,
+            "node": node,
+        }
+    finally:
+        if client is not None:
+            client.close()
 
 
 def check_machine(node: str, checks: list[dict[str, Any]]) -> dict[str, Any]:

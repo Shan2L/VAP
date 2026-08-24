@@ -14,7 +14,11 @@ from vap.agent.analysis import (
 )
 from vap.agent.runtime import AgentTool, VAPAgentRuntime
 from vap.server import settings
-from vap.server.artifacts import current_config_payload, read_current_log_file, save_temp_config
+from vap.server.artifacts import (
+    current_config_payload,
+    read_current_log_file,
+    save_temp_config,
+)
 from vap.server.checks import check_config_ports, check_config_resources
 from vap.server.state import get_run_state_snapshot, start_vap_run, stop_vap_run
 from vap.validation import validate_config_payload
@@ -218,17 +222,6 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
                 ["artifact"],
             ),
             handler=prepare_download_artifact,
-        )
-    )
-    runtime.register_tool(
-        AgentTool(
-            name="prepare_run",
-            description="Validate whether a config is ready to run without starting VAP.",
-            safety="safe",
-            parameters=object_schema({"config": {"type": "object"}}),
-            handler=lambda args: validate_config_payload(
-                args.get("config") or current_config_payload()
-            ),
         )
     )
     runtime.register_tool(

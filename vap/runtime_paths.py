@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parents[1]
+INSTALLED_ASSET_DIR = Path(sys.prefix) / "share" / "vap"
+ASSET_DIR = (
+    APP_DIR
+    if (APP_DIR / "public" / "index.html").is_file()
+    and (APP_DIR / "example-config.json").is_file()
+    else INSTALLED_ASSET_DIR
+)
 VAP_HOME = Path(os.getenv("VAP_HOME", "~/.vap")).expanduser().resolve()
 VAP_BIN_DIR = VAP_HOME / "bin"
 VAP_LOGS_DIR = VAP_HOME / "logs"
@@ -11,8 +19,25 @@ VAP_TMP_DIR = VAP_HOME / "tmp"
 VAP_VENV_DIR = VAP_HOME / "venv"
 VAP_TEMP_CONFIG_DIR = VAP_TMP_DIR / "configs"
 VAP_CONFIG_PATH = VAP_HOME / "config.json"
+VAP_ACTIVE_RUN_PATH = VAP_HOME / "active-run.json"
 VAP_PERFETTO_HOME = VAP_HOME / "perfetto-home"
 VAP_CACHE_DIR = VAP_HOME / "cache"
+
+
+def validate_runtime_assets() -> None:
+    required = (
+        ASSET_DIR / "public" / "index.html",
+        ASSET_DIR / "public" / "favicon.svg",
+        ASSET_DIR / "example-config.json",
+        ASSET_DIR / "uninstall.sh",
+        ASSET_DIR / "skills" / "TorchProfilerTraceSkill" / "queries.yaml",
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            "VAP runtime assets are missing; reinstall VAP from a complete package: "
+            + ", ".join(missing)
+        )
 
 
 def ensure_vap_home() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import gzip
+import heapq
 import json
 import os
 import subprocess
@@ -9,15 +9,17 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from vap.postprocess.json_trace import iter_trace_events
+from vap.postprocess.trace import profile_trace_candidates
 from vap.runtime_paths import APP_DIR, VAP_BIN_DIR, VAP_PERFETTO_HOME
 from vap.server import settings
 from vap.server.artifacts import (
-    build_current_profile_archive,
-    latest_log_run_dir,
+    profile_archive_info,
     read_current_log_file,
     resolve_profile_archive_run_dir,
 )
 from vap.server.state import get_run_state_snapshot
+
 
 def object_schema(
     properties: dict[str, Any] | None = None, required: list[str] | None = None
@@ -30,47 +32,28 @@ def object_schema(
     }
 
 
-def inspect_latest_trace(args: dict[str, Any]) -> dict[str, Any]:
+def resolve_latest_trace(args: dict[str, Any]) -> dict[str, Any]:
     preferred_name = str(args.get("preferred_name") or "merged_trace")
     raw_run_dir = args.get("run_dir")
     if isinstance(raw_run_dir, str) and raw_run_dir.strip():
         run_dir = resolve_profile_archive_run_dir(raw_run_dir)
     else:
-        snapshot = get_run_state_snapshot()
-        run_dir = (
-            Path(snapshot["run_dir"]).resolve()
-            if snapshot["run_dir"]
-            else latest_log_run_dir()
-        )
-    if run_dir is None:
-        raise ValueError("No run directory is available yet")
+        run_dir = resolve_profile_archive_run_dir()
 
     profile_dir = (run_dir / "vllm-profile").resolve()
-    if not profile_dir.is_dir() or not profile_dir.is_relative_to(settings.LOGS_DIR.resolve()):
+    if not profile_dir.is_dir() or not profile_dir.is_relative_to(
+        settings.LOGS_DIR.resolve()
+    ):
         raise ValueError(
             "The latest run has not generated a vllm-profile directory yet"
         )
 
-    files = sorted([path for path in profile_dir.rglob("*") if path.is_file()])
+    files = profile_trace_candidates(profile_dir, preferred_name)
     if not files:
-        raise ValueError("The vllm-profile directory is empty")
+        raise ValueError("No supported trace is available yet")
 
-    def score(path: Path) -> tuple[int, str]:
-        name = path.name.lower()
-        preferred = preferred_name.lower()
-        if name.startswith(preferred) or preferred in name:
-            return (0, name)
-        if "merged_trace" in name or "merge_trace" in name:
-            return (1, name)
-        if name.endswith(".trace.json.gz") or name.endswith(".pt.trace.json.gz"):
-            return (2, name)
-        if name.endswith(".trace.json") or name.endswith(".json"):
-            return (3, name)
-        return (4, name)
-
-    trace_path = sorted(files, key=score)[0]
+    trace_path = files[0]
     stat = trace_path.stat()
-    summary = summarize_trace_file(trace_path)
     trace_name = trace_path.name.lower()
     return {
         "run_dir": str(run_dir),
@@ -82,8 +65,16 @@ def inspect_latest_trace(args: dict[str, Any]) -> dict[str, Any]:
             "%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)
         ),
         "candidate_count": len(files),
-        "candidates": [path.name for path in sorted(files, key=score)[:10]],
+        "candidates": [path.name for path in files[:10]],
         "looks_merged": "merged_trace" in trace_name or "merge_trace" in trace_name,
+    }
+
+
+def inspect_latest_trace(args: dict[str, Any]) -> dict[str, Any]:
+    trace_info = resolve_latest_trace(args)
+    summary = summarize_trace_file(Path(trace_info["trace_path"]))
+    return {
+        **trace_info,
         "summary": summary,
         "diagnosis": build_trace_diagnosis(summary),
     }
@@ -185,7 +176,9 @@ LIMIT {limit};
 }
 
 
-def load_skill_queries(skill_dir: Path = settings.TORCHPROFILER_SKILL_DIR) -> dict[str, str]:
+def load_skill_queries(
+    skill_dir: Path = settings.TORCHPROFILER_SKILL_DIR,
+) -> dict[str, str]:
     query_file = skill_dir / "queries.yaml"
     if not query_file.is_file():
         return PERFETTO_SQL_QUERIES
@@ -415,72 +408,63 @@ def build_trace_diagnosis(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def summarize_trace_file(trace_path: Path) -> dict[str, Any]:
-    try:
-        if trace_path.suffix == ".gz":
-            with gzip.open(
-                trace_path, "rt", encoding="utf-8", errors="replace"
-            ) as trace_file:
-                payload = json.load(trace_file)
-        else:
-            payload = json.loads(
-                trace_path.read_text(encoding="utf-8", errors="replace")
-            )
-    except Exception as exc:
-        return {"available": False, "message": f"Failed to parse trace JSON: {exc}"}
-
-    events = payload.get("traceEvents") if isinstance(payload, dict) else None
-    if not isinstance(events, list):
-        return {
-            "available": False,
-            "message": "Trace JSON does not contain traceEvents",
-        }
-
     category_counts: Counter[str] = Counter()
     rank_counts: Counter[str] = Counter()
     duration_by_category: defaultdict[str, float] = defaultdict(float)
-    longest_events: list[dict[str, Any]] = []
+    longest_heap: list[tuple[float, int, dict[str, Any]]] = []
     min_ts: float | None = None
     max_ts: float | None = None
+    event_count = 0
+    sequence = 0
 
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        category = str(event.get("cat") or "uncategorized")
-        category_counts[category] += 1
-        args = event.get("args") if isinstance(event.get("args"), dict) else {}
-        rank = args.get("rank", args.get("args.rank", "unknown"))
-        rank_counts[str(rank)] += 1
+    try:
+        for event in iter_trace_events(trace_path):
+            event_count += 1
+            category = str(event.get("cat") or "uncategorized")
+            category_counts[category] += 1
+            args = event.get("args") if isinstance(event.get("args"), dict) else {}
+            rank = args.get("rank", args.get("args.rank", "unknown"))
+            rank_counts[str(rank)] += 1
 
-        ts = event.get("ts")
-        dur = event.get("dur")
-        if isinstance(ts, (int, float)):
-            min_ts = ts if min_ts is None else min(min_ts, ts)
+            ts = event.get("ts")
+            dur = event.get("dur")
+            if isinstance(ts, (int, float)):
+                min_ts = ts if min_ts is None else min(min_ts, ts)
+                if isinstance(dur, (int, float)):
+                    max_ts = ts + dur if max_ts is None else max(max_ts, ts + dur)
+                else:
+                    max_ts = ts if max_ts is None else max(max_ts, ts)
             if isinstance(dur, (int, float)):
-                max_ts = ts + dur if max_ts is None else max(max_ts, ts + dur)
-            else:
-                max_ts = ts if max_ts is None else max(max_ts, ts)
-        if isinstance(dur, (int, float)):
-            duration_by_category[category] += float(dur)
-            longest_events.append(
-                {
+                duration = float(dur)
+                duration_by_category[category] += duration
+                item = {
                     "name": str(event.get("name") or ""),
                     "category": category,
-                    "duration_us": round(float(dur), 3),
+                    "duration_us": round(duration, 3),
                     "rank": str(rank),
                     "pid": event.get("pid"),
                     "tid": event.get("tid"),
                 }
-            )
+                entry = (duration, sequence, item)
+                sequence += 1
+                if len(longest_heap) < 20:
+                    heapq.heappush(longest_heap, entry)
+                elif duration > longest_heap[0][0]:
+                    heapq.heapreplace(longest_heap, entry)
+    except Exception as exc:
+        return {"available": False, "message": f"Failed to parse trace JSON: {exc}"}
 
-    longest_events = sorted(
-        longest_events,
-        key=lambda item: item["duration_us"],
-        reverse=True,
-    )[:20]
+    longest_events = [
+        item
+        for _duration, _sequence, item in sorted(
+            longest_heap,
+            reverse=True,
+        )
+    ]
 
     return {
         "available": True,
-        "event_count": len(events),
+        "event_count": event_count,
         "time_span_us": (
             round(max_ts - min_ts, 3)
             if min_ts is not None and max_ts is not None
@@ -522,17 +506,14 @@ def prepare_download_artifact(args: dict[str, Any]) -> dict[str, Any]:
         }
     if artifact == "trace_archive":
         run_dir = get_run_state_snapshot().get("run_dir")
-        # Validate availability now, but let the browser stream the real download.
-        file_name, _ = build_current_profile_archive(str(run_dir) if run_dir else None)
+        info = profile_archive_info(str(run_dir) if run_dir else None)
         query = f"?run_dir={str(run_dir)}" if run_dir else ""
         return {
             "artifact": artifact,
-            "label": file_name,
+            "label": info["file_name"],
             "download_url": f"/api/profile/archive{query}",
             "content_type": "application/zip",
         }
     raise ValueError(
         "Unsupported artifact. Use vap_log, vllm_deploy_log, vllm_bench_log, or trace_archive."
     )
-
-

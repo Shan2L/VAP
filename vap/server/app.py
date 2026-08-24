@@ -5,15 +5,19 @@ import atexit
 import signal
 from http.server import ThreadingHTTPServer
 
-from vap.runtime_paths import VAP_HOME, ensure_vap_home
+from vap.runtime_paths import VAP_HOME, ensure_vap_home, validate_runtime_assets
 from vap.server import settings
+from vap.server.artifacts import cleanup_old_profile_archives
 from vap.server.auth import build_session_urls
 from vap.server.handler import VAPConfigHandler
-from vap.server.state import cleanup_active_run_on_server_exit
+from vap.server.state import cleanup_active_run_on_server_exit, recover_orphaned_run
 
 
 def main(argv: list[str] | None = None) -> None:
+    validate_runtime_assets()
     ensure_vap_home()
+    recover_orphaned_run()
+    cleanup_old_profile_archives()
     parser = argparse.ArgumentParser(description="VAP config management UI")
     parser.add_argument(
         "--host",

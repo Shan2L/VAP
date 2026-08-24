@@ -7,7 +7,7 @@ name = "vap"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "docker>=7.2.0",
+    "docker[ssh]>=7.2.0",
     "openai>=2.0.0",
     "pydantic>=2.13.4",
     "requests>=2.34.2",
@@ -16,6 +16,19 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["vap*"]
+
+[tool.setuptools.data-files]
+"share/vap" = ["example-config.json", "uninstall.sh"]
+"share/vap/public" = ["public/index.html", "public/favicon.svg"]
+"share/vap/skills/TorchProfilerTraceSkill" = [
+    "skills/TorchProfilerTraceSkill/LICENSE",
+    "skills/TorchProfilerTraceSkill/NOTICE.md",
+    "skills/TorchProfilerTraceSkill/README.md",
+    "skills/TorchProfilerTraceSkill/SKILL.md",
+    "skills/TorchProfilerTraceSkill/WORKFLOWS.md",
+    "skills/TorchProfilerTraceSkill/queries.yaml",
+    "skills/TorchProfilerTraceSkill/runner.py",
+]
 
 [dependency-groups]
 dev = [

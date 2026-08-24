@@ -14,6 +14,52 @@ from vap.runtime_paths import APP_DIR
 from vap.server import settings
 
 
+def process_start_ticks(pid: int) -> int | None:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields_after_command = stat.rpartition(") ")[2].split()
+        return int(fields_after_command[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def persist_active_run_locked() -> None:
+    process = settings.RUN_STATE["process"]
+    if process is None or process.poll() is not None:
+        settings.ACTIVE_RUN_PATH.unlink(missing_ok=True)
+        return
+    payload = {
+        "pid": process.pid,
+        "pgid": process.pid,
+        "start_ticks": process_start_ticks(process.pid),
+        "run_dir": (
+            str(settings.RUN_STATE["run_dir"])
+            if settings.RUN_STATE["run_dir"]
+            else None
+        ),
+        "config_path": (
+            str(settings.RUN_STATE["config_path"])
+            if settings.RUN_STATE["config_path"]
+            else None
+        ),
+        "started_at": settings.RUN_STATE["started_at"],
+    }
+    temporary_path = settings.ACTIVE_RUN_PATH.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.chmod(0o600)
+    temporary_path.replace(settings.ACTIVE_RUN_PATH)
+
+
+def clear_active_run_record() -> None:
+    try:
+        settings.ACTIVE_RUN_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"Failed to remove active-run record: {exc}")
+
+
 def get_run_state_snapshot() -> dict[str, Any]:
     with settings.RUN_LOCK:
         process = settings.RUN_STATE["process"]
@@ -58,13 +104,26 @@ def monitor_run_process(
 ) -> None:
     while True:
         with settings.RUN_LOCK:
-            if settings.RUN_STATE["process"] is process and settings.RUN_STATE["run_dir"] is None:
-                settings.RUN_STATE["run_dir"] = discover_run_dir(existing_dirs, started_at)
+            if (
+                settings.RUN_STATE["process"] is process
+                and settings.RUN_STATE["run_dir"] is None
+            ):
+                discovered = discover_run_dir(existing_dirs, started_at)
+                if discovered is not None:
+                    settings.RUN_STATE["run_dir"] = discovered
+                    try:
+                        persist_active_run_locked()
+                    except OSError as exc:
+                        settings.RUN_STATE[
+                            "output"
+                        ] += f"\n--- Failed to update active-run record: {exc} ---\n"
         line = process.stdout.readline() if process.stdout else ""
         if line:
             with settings.RUN_LOCK:
                 if settings.RUN_STATE["process"] is process:
-                    settings.RUN_STATE["output"] += line
+                    settings.RUN_STATE["output"] = (
+                        settings.RUN_STATE["output"] + line
+                    )[-settings.MAX_RUN_OUTPUT_CHARS :]
         elif process.poll() is not None:
             break
         else:
@@ -82,6 +141,7 @@ def monitor_run_process(
         settings.RUN_STATE["running"] = False
         settings.RUN_STATE["exit_code"] = exit_code
         settings.RUN_STATE["ended_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        clear_active_run_record()
 
 
 def current_run_is_tensorboard_phase() -> bool:
@@ -94,7 +154,9 @@ def current_run_is_tensorboard_phase() -> bool:
     if run_dir is None:
         return False
     log_path = (run_dir / "vap_log.txt").resolve()
-    if not log_path.is_file() or not log_path.is_relative_to(settings.LOGS_DIR.resolve()):
+    if not log_path.is_file() or not log_path.is_relative_to(
+        settings.LOGS_DIR.resolve()
+    ):
         return False
     return tensorboard_marker in log_path.read_text(encoding="utf-8", errors="replace")
 
@@ -226,6 +288,7 @@ def _start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
             start_new_session=True,
         )
     except Exception:
+        clear_active_run_record()
         with settings.RUN_LOCK:
             settings.RUN_STATE.update(
                 {
@@ -239,16 +302,34 @@ def _start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
                 }
             )
         raise
-    with settings.RUN_LOCK:
-        settings.RUN_STATE.update(
-            {
-                "process": process,
-                "pid": process.pid,
-                "output": settings.RUN_STATE["output"]
-                + f"--- VAP started (pid {process.pid}) ---\n",
-            }
-        )
-        stop_requested = settings.RUN_STATE["stop_requested"]
+    try:
+        with settings.RUN_LOCK:
+            settings.RUN_STATE.update(
+                {
+                    "process": process,
+                    "pid": process.pid,
+                    "output": settings.RUN_STATE["output"]
+                    + f"--- VAP started (pid {process.pid}) ---\n",
+                }
+            )
+            persist_active_run_locked()
+            stop_requested = settings.RUN_STATE["stop_requested"]
+    except Exception:
+        stop_process_group_sync(process)
+        clear_active_run_record()
+        with settings.RUN_LOCK:
+            settings.RUN_STATE.update(
+                {
+                    "process": None,
+                    "pid": None,
+                    "running": False,
+                    "exit_code": process.returncode,
+                    "ended_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "output": settings.RUN_STATE["output"]
+                    + "--- VAP could not persist active-run state and was stopped ---\n",
+                }
+            )
+        raise
     thread = threading.Thread(
         target=monitor_run_process,
         args=(process, existing_dirs, started_at),
@@ -273,13 +354,66 @@ def process_cmdline(pid: int) -> str:
         return ""
 
 
+def recover_orphaned_run(timeout_sec: float = 5.0) -> bool:
+    """Stop a VAP process left behind by an unclean control-server exit."""
+    if not settings.ACTIVE_RUN_PATH.is_file():
+        return False
+    try:
+        payload = json.loads(settings.ACTIVE_RUN_PATH.read_text(encoding="utf-8"))
+        pid = int(payload["pid"])
+        pgid = int(payload["pgid"])
+        recorded_start_ticks = int(payload["start_ticks"])
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Discarding invalid active-run record: {exc}")
+        clear_active_run_record()
+        return False
+
+    cmdline = process_cmdline(pid)
+    if (
+        process_start_ticks(pid) != recorded_start_ticks
+        or pgid != pid
+        or "-m vap.main run" not in cmdline
+    ):
+        clear_active_run_record()
+        return False
+
+    print(f"Recovering orphaned VAP run (pid {pid}); stopping its process group...")
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        print(f"Failed to stop orphaned VAP process group {pgid}: {exc}")
+    else:
+        deadline = time.time() + timeout_sec
+        while (
+            time.time() < deadline and process_start_ticks(pid) == recorded_start_ticks
+        ):
+            time.sleep(0.1)
+        if process_start_ticks(pid) == recorded_start_ticks:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                print(f"Failed to force kill orphaned VAP process group {pgid}: {exc}")
+
+    raw_run_dir = payload.get("run_dir")
+    run_dir = Path(raw_run_dir).resolve() if isinstance(raw_run_dir, str) else None
+    terminate_recorded_visualization_pids(run_dir)
+    clear_active_run_record()
+    return True
+
+
 def terminate_recorded_visualization_pids(
     run_dir: Path | None, timeout_sec: float = 3.0
 ) -> None:
     if run_dir is None:
         return
     pid_file = (run_dir / "visualization_pids.json").resolve()
-    if not pid_file.is_file() or not pid_file.is_relative_to(settings.LOGS_DIR.resolve()):
+    if not pid_file.is_file() or not pid_file.is_relative_to(
+        settings.LOGS_DIR.resolve()
+    ):
         return
     try:
         payload = json.loads(pid_file.read_text(encoding="utf-8"))
@@ -360,12 +494,14 @@ def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
         return
     if not is_running or process is None:
         terminate_recorded_visualization_pids(run_dir)
+        clear_active_run_record()
         return
 
     print("Stopping active VAP run before server exits...")
     if not stop_process_group_sync(process, timeout_sec=timeout_sec):
         print("Active VAP run did not stop cleanly before server exit.")
     terminate_recorded_visualization_pids(run_dir)
+    clear_active_run_record()
 
 
 def stop_vap_run() -> dict[str, Any]:
@@ -379,7 +515,9 @@ def stop_vap_run() -> dict[str, Any]:
         is_starting = settings.RUN_STATE["running"] and process is None
         if is_starting:
             settings.RUN_STATE["stop_requested"] = True
-            settings.RUN_STATE["output"] += "\n--- Stop requested while VAP is starting ---\n"
+            settings.RUN_STATE[
+                "output"
+            ] += "\n--- Stop requested while VAP is starting ---\n"
     if is_starting:
         return {
             "message": "Stop requested. VAP will be terminated as soon as it starts.",

@@ -110,98 +110,6 @@ class VAPAgentRuntime:
         except Exception as exc:
             raise ValueError(f"Agent key validation failed: {exc}") from exc
 
-    def chat(self, payload: dict[str, Any]) -> dict[str, Any]:
-        subscription_key, key_source = self.get_subscription_key()
-        if not subscription_key:
-            raise ValueError("Agent is locked. Provide a subscription key first.")
-
-        messages = self.normalize_messages(payload.get("messages"))
-        max_completion_tokens = self._parse_max_tokens(
-            payload.get("max_completion_tokens", 700)
-        )
-        client = self._create_client(subscription_key)
-        loop_messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self._system_prompt()},
-            *messages,
-        ]
-
-        tool_events: list[dict[str, Any]] = []
-        for _ in range(AGENT_MAX_TOOL_ROUNDS):
-            response = self._chat_completion(
-                client,
-                messages=loop_messages,
-                tools=[tool.to_openai_tool() for tool in self._tools.values()],
-                max_completion_tokens=max_completion_tokens,
-            )
-            message = response.choices[0].message
-            tool_calls = message.tool_calls or []
-            if not tool_calls:
-                return {
-                    "type": "message",
-                    "message": {
-                        "role": "assistant",
-                        "content": message.content or "",
-                    },
-                    "tool_events": tool_events,
-                    "model": AGENT_MODEL,
-                    "key_source": key_source,
-                }
-
-            loop_messages.append(self._assistant_tool_call_message(message))
-            for tool_call in tool_calls:
-                tool_name = tool_call.function.name
-                arguments = self._parse_tool_arguments(tool_call.function.arguments)
-                tool = self._tools.get(tool_name)
-                if tool is None:
-                    result = {"ok": False, "message": f"Unknown tool: {tool_name}"}
-                elif tool.safety == "requires_approval":
-                    approval = self._create_pending_action(tool_name, arguments)
-                    return {
-                        "type": "approval_required",
-                        "message": {
-                            "role": "assistant",
-                            "content": f"Approval required before running tool `{tool_name}`.",
-                        },
-                        "approval": {
-                            "approval_id": approval.approval_id,
-                            "tool_name": approval.tool_name,
-                            "arguments": approval.arguments,
-                        },
-                        "tool_events": tool_events,
-                        "model": AGENT_MODEL,
-                        "key_source": key_source,
-                    }
-                else:
-                    result = self._execute_tool(tool, arguments)
-                    tool_events.append(
-                        {
-                            "tool_name": tool_name,
-                            "arguments": arguments,
-                            "result": result,
-                        }
-                    )
-                loop_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
-
-        return {
-            "type": "message",
-            "message": {
-                "role": "assistant",
-                "content": (
-                    f"I reached the tool-call limit ({AGENT_MAX_TOOL_ROUNDS}) while working on this request. "
-                    "Try asking for a narrower analysis, or increase VAP_AGENT_MAX_TOOL_ROUNDS."
-                ),
-            },
-            "tool_events": tool_events,
-            "model": AGENT_MODEL,
-            "key_source": key_source,
-        }
-
     def stream_chat(self, payload: dict[str, Any]):
         subscription_key, key_source = self.get_subscription_key()
         if not subscription_key:
@@ -342,11 +250,19 @@ class VAPAgentRuntime:
         if tool is None:
             raise ValueError(f"Tool no longer exists: {action.tool_name}")
         result = self._execute_tool(tool, action.arguments)
+        outcome = (
+            "succeeded"
+            if result.get("ok")
+            else f"failed: {result.get('message', 'unknown error')}"
+        )
         return {
             "type": "action_result",
             "message": {
                 "role": "assistant",
-                "content": f"Approved action `{action.tool_name}` executed.",
+                "content": (
+                    f"Approved action `{action.tool_name}` {outcome}. "
+                    "Use this result as context for subsequent requests."
+                ),
             },
             "tool_event": {
                 "tool_name": action.tool_name,
@@ -433,23 +349,6 @@ class VAPAgentRuntime:
         except Exception as exc:
             return {"ok": False, "message": str(exc)}
 
-    def _assistant_tool_call_message(self, message: Any) -> dict[str, Any]:
-        return {
-            "role": "assistant",
-            "content": message.content,
-            "tool_calls": [
-                {
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments,
-                    },
-                }
-                for tool_call in message.tool_calls or []
-            ],
-        }
-
     def _parse_tool_arguments(self, raw_arguments: str | None) -> dict[str, Any]:
         if not raw_arguments:
             return {}
@@ -497,9 +396,3 @@ class VAPAgentRuntime:
             "queries only when the user asks for deeper evidence.\n\nAvailable VAP tools:\n"
             f"{tool_descriptions}"
         )
-
-    def _user_header(self) -> str:
-        try:
-            return os.getlogin()
-        except OSError:
-            return os.getenv("USER") or os.getenv("USERNAME") or "unknown"

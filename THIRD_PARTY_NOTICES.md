@@ -2,7 +2,7 @@
 
 ## AMD-AGI TraceLens — Trace Fusion
 
-`vap/trace_fusion.py` is a focused adaptation of the TraceFuse implementation from:
+`vap/postprocess/fuse.py` is a focused adaptation of the TraceFuse implementation from:
 
 - Project: [AMD-AGI/TraceLens](https://github.com/AMD-AGI/TraceLens)
 - Source file: `TraceLens/TraceFusion/trace_fuse.py`

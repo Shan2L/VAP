@@ -140,7 +140,6 @@ These tools perform bounded checks or prepare information:
 - `validate_config`: run strict Pydantic and runtime validation;
 - `check_ports`: check required and optional local ports;
 - `check_resources`: check model paths, Docker image, devices, and mounts;
-- `prepare_run`: determine whether a configuration is ready to run;
 - `prepare_download_artifact`: create an approved download link for logs or
   trace artifacts.
 

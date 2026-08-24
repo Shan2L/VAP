@@ -6,10 +6,11 @@ import shutil
 import signal
 from datetime import datetime
 
-from .config import VAPConfig
-from .runtime_paths import VAP_LOGS_DIR, ensure_vap_home
-from .validation import validate_config_or_raise
 from vap.pipelines.torch_profiling_pipeline import TorchProfilingPipeline
+
+from .config import VAPConfig
+from .runtime_paths import ASSET_DIR, VAP_LOGS_DIR, ensure_vap_home
+from .validation import validate_config_or_raise
 
 logger = logging.getLogger("VAP")
 
@@ -48,16 +49,6 @@ def setup_logging(log_path: str, debug: bool = False) -> logging.Logger:
     return logging.getLogger("VAP")
 
 
-def is_machine_connected(node: str) -> bool:
-    logger.warning("Checking machine connection is not implemented yet.")
-    return False
-
-
-def check_remote_assets(node: str, asset_path: str) -> bool:
-    logger.warning("Checking remote assets is not implemented yet.")
-    return False
-
-
 def clean(log_dir: str):
     target = os.path.abspath(log_dir)
     logs_root = os.path.abspath(str(VAP_LOGS_DIR))
@@ -85,12 +76,6 @@ def run(args, log_dir: str):
     config = load_config(args.config)
     run_logger.info("VAP started")
 
-    if config.distributed_cfg is not None:
-        run_logger.warning(
-            "distributed_cfg is present but distributed execution is not "
-            "supported yet; continuing with a local run"
-        )
-
     pipeline = TorchProfilingPipeline(
         config,
         log_path,
@@ -100,8 +85,8 @@ def run(args, log_dir: str):
 
     def signal_handler(signum, frame):
         run_logger.info("Signal %s received. Cleaning up...", signum)
-        pipeline.runner.remove_container()
-        raise SystemExit(0)
+        pipeline.cleanup()
+        raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -114,7 +99,9 @@ def main(argv: list[str] | None = None) -> None:
     subparsers = argparser.add_subparsers(dest="command")
     run_parser = subparsers.add_parser("run", help="Run VAP")
     subparsers.add_parser("clean", help="Clean VAP")
-    run_parser.add_argument("--config", type=str, default="example-config.json")
+    run_parser.add_argument(
+        "--config", type=str, default=str(ASSET_DIR / "example-config.json")
+    )
     run_parser.add_argument("--visualization-host", default="127.0.0.1")
     args = argparser.parse_args(argv)
 

@@ -1,10 +1,14 @@
 import os
-import shlex
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 TORCH_PROFILER_DIR = "/app/VAP/log/vllm-profile"
+PARALLEL_SIZE_ALIASES = {
+    "tensor": ("-tp", "--tensor-parallel-size"),
+    "pipeline": ("-pp", "--pipeline-parallel-size"),
+    "data": ("-dp", "--data-parallel-size"),
+}
 
 
 class StrictBaseModel(BaseModel):
@@ -17,10 +21,23 @@ class ModelConfig(StrictBaseModel):
 
 
 class DistributedConfig(StrictBaseModel):
-    num_nodes: int
-    ray_port: int
-    head_node: Literal["localhost"]
+    enable: bool
+    ray_port: int = Field(ge=1, le=65535)
     worker_nodes: List[str]
+
+
+class ClockProbeConfig(StrictBaseModel):
+    enabled: bool = False
+    apply_clc_on_warning: bool = False
+    mode: Literal["auto", "hardware", "software"] = "software"
+    required: bool = False
+    ray_address: str = "auto"
+    port: int = Field(default=31990, ge=1, le=65535)
+    interval_ms: float = Field(default=100.0, gt=0)
+    hardware_interval_ms: float = Field(default=50.0, gt=0)
+    hardware_interface: Optional[str] = None
+    hardware_phc_device: Optional[str] = None
+    hardware_ptp_logs: Dict[str, str] = Field(default_factory=dict)
 
 
 class ProfilerConfig(StrictBaseModel):
@@ -53,6 +70,7 @@ class DockerConfig(StrictBaseModel):
 class VAPConfig(StrictBaseModel):
     model_cfg: ModelConfig
     distributed_cfg: Optional[DistributedConfig] = None
+    clock_probe_cfg: ClockProbeConfig = Field(default_factory=ClockProbeConfig)
     vllm_deploy_cfg: Dict[str, Any]
     vllm_bench_cfg: Dict[str, Any]
     profiler_cfg: ProfilerConfig
@@ -99,14 +117,32 @@ class VAPConfig(StrictBaseModel):
         deploy_args.update(self.build_profiler_cli_args_dict())
         return self.build_cli_args(deploy_args)
 
-    def vllm_deploy_args_str(self) -> str:
-        return shlex.join(self.vllm_deploy_args())
-
     def vllm_bench_args(self) -> list[str]:
         return self.build_cli_args(dict(self.vllm_bench_cfg))
 
-    def vllm_bench_args_str(self) -> str:
-        return shlex.join(self.vllm_bench_args())
+    @property
+    def parallel_world_size(self) -> int:
+        world_size = 1
+        for dimension, aliases in PARALLEL_SIZE_ALIASES.items():
+            configured = [
+                self.vllm_deploy_cfg[key]
+                for key in aliases
+                if self.vllm_deploy_cfg.get(key) is not None
+            ]
+            if not configured:
+                continue
+            sizes = {int(value) for value in configured}
+            if len(sizes) != 1:
+                raise ValueError(
+                    f"Conflicting {dimension} parallel size aliases: {aliases}"
+                )
+            size = sizes.pop()
+            if size < 1:
+                raise ValueError(
+                    f"{dimension} parallel size must be a positive integer"
+                )
+            world_size *= size
+        return world_size
 
     def build_cli_args(self, args_dict: Dict[str, Any]) -> list[str]:
         args: list[str] = []
@@ -117,6 +153,3 @@ class VAPConfig(StrictBaseModel):
                     value = str(value).lower()
                 args.append(str(value))
         return args
-
-    def build_cli_rgs_str(self, args_dict: Dict[str, Any]) -> str:
-        return shlex.join(self.build_cli_args(args_dict))

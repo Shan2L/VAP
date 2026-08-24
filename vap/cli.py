@@ -5,8 +5,9 @@ import os
 from types import SimpleNamespace
 
 from . import main as vap_workflow
-from . import server as vap_server
-from .runtime_paths import APP_DIR, VAP_CONFIG_PATH, VAP_LOGS_DIR, ensure_vap_home
+from .runtime_paths import ASSET_DIR, VAP_CONFIG_PATH, VAP_LOGS_DIR, ensure_vap_home
+from .server.app import main as start_server
+from .server.settings import DEFAULT_SERVER_HOST
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -16,7 +17,7 @@ def main(argv: list[str] | None = None) -> None:
     start_parser = subparsers.add_parser("start", help="Start the VAP web UI server")
     start_parser.add_argument(
         "--host",
-        default=vap_server.DEFAULT_SERVER_HOST,
+        default=DEFAULT_SERVER_HOST,
         help="Bind host (default: 0.0.0.0; use 127.0.0.1 for local-only access)",
     )
     start_parser.add_argument("--port", type=int, default=8899)
@@ -50,7 +51,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     if args.command == "uninstall":
-        uninstall_script = APP_DIR / "uninstall.sh"
+        uninstall_script = ASSET_DIR / "uninstall.sh"
         if not uninstall_script.is_file():
             raise FileNotFoundError(f"Uninstall script not found: {uninstall_script}")
 
@@ -70,12 +71,12 @@ def main(argv: list[str] | None = None) -> None:
     ensure_vap_home()
     if not VAP_CONFIG_PATH.is_file():
         VAP_CONFIG_PATH.write_text(
-            (APP_DIR / "example-config.json").read_text(encoding="utf-8"),
+            (ASSET_DIR / "example-config.json").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
         VAP_CONFIG_PATH.chmod(0o600)
     if args.command == "start":
-        vap_server.main(["--host", args.host, "--port", str(args.port)])
+        start_server(["--host", args.host, "--port", str(args.port)])
     elif args.command == "run":
         vap_workflow.run(
             SimpleNamespace(

@@ -50,7 +50,7 @@ Core components:
 - `vap/config.py`: Defines strict Pydantic configuration models.
 - `vap/validation.py`: Validates ports, parameters, security boundaries, and compatibility.
 - `vap/main.py`: Implements the Docker, vLLM, benchmark, profiler, and visualization workflow.
-- `vap/trace_fusion.py`: Merges multi-rank PyTorch traces.
+- `vap/postprocess/fuse.py`: Merges multi-rank PyTorch traces.
 - `vap/agent/`: Implements the optional LLM Agent and approval tools.
 - `skills/TorchProfilerTraceSkill/`: Provides trace analysis capabilities based on Perfetto SQL.
 

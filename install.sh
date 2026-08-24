@@ -27,7 +27,7 @@ for command in curl grep install mktemp sha256sum tar; do
     fi
 done
 
-for project_file in pyproject.toml example-config.json; do
+for project_file in pyproject.toml uv.lock example-config.json; do
     if [[ ! -f "$project_file" ]]; then
         echo "Run install.sh from a complete VAP source checkout; missing $project_file" >&2
         exit 1
@@ -71,7 +71,8 @@ if [[ ! -x "$VENV_DIR/bin/python" ]] || ! "$VENV_DIR/bin/python" -c 'import sys;
     "$UV_BIN" venv "$VENV_DIR" --python 3.12
 fi
 
-"$UV_BIN" pip install --python "$VENV_DIR/bin/python" -e .
+UV_PROJECT_ENVIRONMENT="$VENV_DIR" \
+    "$UV_BIN" sync --locked --no-dev --python "$VENV_DIR/bin/python"
 "$VENV_DIR/bin/vap" --help >/dev/null
 
 if [[ ! -f "$VAP_HOME/config.json" ]]; then

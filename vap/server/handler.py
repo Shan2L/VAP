@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import shutil
 from http import HTTPStatus
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler
@@ -9,13 +10,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from vap.agent.analysis import inspect_latest_trace
+from vap.agent.analysis import resolve_latest_trace
 from vap.agent.tools import get_agent_runtime, get_agent_status_payload
 from vap.config import VAPConfig
 from vap.server import settings
 from vap.server.artifacts import (
-    build_current_profile_archive,
     build_log_download,
+    create_profile_archive,
     read_current_log_file,
     resolve_config_path,
     save_temp_config,
@@ -28,6 +29,7 @@ from vap.server.checks import (
 )
 from vap.server.state import get_run_state_snapshot, start_vap_run, stop_vap_run
 from vap.validation import validate_config_payload
+
 
 class VAPConfigHandler(BaseHTTPRequestHandler):
     server_version = "VAPConfigServer/0.1"
@@ -159,7 +161,6 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             "/api/run": self.handle_run_start,
             "/api/run/stop": self.handle_run_stop,
             "/api/agent/unlock": self.handle_agent_unlock,
-            "/api/agent/chat": self.handle_agent_chat,
             "/api/agent/chat/stream": self.handle_agent_chat_stream,
             "/api/agent/approve": self.handle_agent_approve,
             "/api/agent/cancel-action": self.handle_agent_cancel_action,
@@ -285,7 +286,10 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             {
                 **get_run_state_snapshot(),
                 "logs": {
-                    name: read_current_log_file(name)
+                    name: read_current_log_file(
+                        name,
+                        max_bytes=settings.MAX_STATUS_LOG_BYTES,
+                    )
                     for name in ("vap_log.txt", "vllm_deploy.log", "vllm_bench.log")
                 },
             }
@@ -295,35 +299,37 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         try:
             params = parse_qs(query)
             run_dir = params.get("run_dir", [None])[0]
-            file_name, content = build_current_profile_archive(run_dir)
+            file_name, archive_path = create_profile_archive(run_dir)
         except ValueError as exc:
             self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        self.send_binary(
-            content,
-            "application/zip",
-            f'attachment; filename="{file_name}"',
-        )
+        try:
+            self.send_file(
+                archive_path,
+                "application/zip",
+                f'attachment; filename="{file_name}"',
+            )
+        finally:
+            archive_path.unlink(missing_ok=True)
 
     def handle_profile_trace(self, query: str) -> None:
         try:
             params = parse_qs(query)
             run_dir = params.get("run_dir", [None])[0]
-            trace_info = inspect_latest_trace(
+            trace_info = resolve_latest_trace(
                 {"preferred_name": "merged_trace", "run_dir": run_dir}
             )
             trace_path = Path(trace_info["trace_path"]).resolve()
             if not trace_path.is_relative_to(settings.LOGS_DIR.resolve()):
                 raise ValueError("Trace path is outside VAP logs")
-            content = trace_path.read_bytes()
         except ValueError as exc:
             self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         content_type = (
             "application/gzip" if trace_path.suffix == ".gz" else "application/json"
         )
-        self.send_binary(
-            content,
+        self.send_file(
+            trace_path,
             content_type,
             f'inline; filename="{trace_path.name}"',
         )
@@ -418,10 +424,6 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
                 "server_session_id": settings.SERVER_SESSION_ID,
             }
         )
-
-    def handle_agent_chat(self) -> None:
-        payload = self.read_json_body()
-        self.send_json(get_agent_runtime().chat(payload))
 
     def handle_agent_chat_stream(self) -> None:
         payload = self.read_json_body()
@@ -521,7 +523,10 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
 
     def serve_static(self, relative_path: str) -> None:
         static_path = (settings.STATIC_DIR / relative_path).resolve()
-        if not static_path.is_relative_to(settings.STATIC_DIR) or not static_path.is_file():
+        if (
+            not static_path.is_relative_to(settings.STATIC_DIR)
+            or not static_path.is_file()
+        ):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
@@ -568,6 +573,22 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def send_file(
+        self,
+        path: Path,
+        content_type: str,
+        content_disposition: str | None = None,
+        status: HTTPStatus = HTTPStatus.OK,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(path.stat().st_size))
+        if content_disposition:
+            self.send_header("Content-Disposition", content_disposition)
+        self.send_auth_cookie_if_needed()
+        self.end_headers()
+        with path.open("rb") as source:
+            shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[VAP Config UI] {self.address_string()} - {fmt % args}")
-
