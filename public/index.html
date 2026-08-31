@@ -1402,6 +1402,101 @@
       color: #1e293b;
     }
 
+    .log-line {
+      display: block;
+      min-height: 1.58em;
+      margin: 0 -8px;
+      padding: 0 8px;
+      border-left: 2px solid transparent;
+    }
+
+    .log-line.info {
+      border-left-color: rgba(56, 189, 248, 0.38);
+    }
+
+    .log-line.warning {
+      border-left-color: var(--warn);
+      background: rgba(245, 158, 11, 0.09);
+    }
+
+    .log-line.error {
+      border-left-color: var(--danger);
+      background: rgba(248, 113, 113, 0.11);
+    }
+
+    .log-line.success {
+      border-left-color: var(--ok);
+      background: rgba(52, 211, 153, 0.08);
+    }
+
+    .log-line.section {
+      margin-top: 5px;
+      color: var(--accent-strong);
+      font-weight: 700;
+      letter-spacing: 0.025em;
+    }
+
+    .log-line.table-row {
+      color: rgba(219, 234, 254, 0.92);
+      background: rgba(148, 163, 184, 0.055);
+    }
+
+    .log-time {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .log-level {
+      display: inline-block;
+      min-width: 5.6em;
+      margin: 0 0.45em;
+      padding: 0 0.45em;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      text-align: center;
+      font-size: 0.86em;
+      font-weight: 800;
+      line-height: 1.45;
+    }
+
+    .log-level.info { color: var(--accent-strong); }
+    .log-level.warning { color: var(--warn); }
+    .log-level.error { color: var(--danger); }
+    .log-level.debug { color: var(--muted); }
+
+    .log-source {
+      color: #a5b4fc;
+      font-weight: 650;
+    }
+
+    .log-metric-key {
+      color: #bae6fd;
+      font-weight: 650;
+    }
+
+    .log-metric-value {
+      color: #bbf7d0;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    :root[data-theme="light"] .log-line.table-row {
+      color: #334155;
+      background: rgba(37, 99, 235, 0.035);
+    }
+
+    :root[data-theme="light"] .log-source {
+      color: #4f46e5;
+    }
+
+    :root[data-theme="light"] .log-metric-key {
+      color: #0369a1;
+    }
+
+    :root[data-theme="light"] .log-metric-value {
+      color: #15803d;
+    }
+
     .toast {
       position: fixed;
       right: 18px;
@@ -3084,16 +3179,86 @@
       return target.scrollHeight - target.scrollTop - target.clientHeight < 24;
     }
 
+    function classifyLogLine(line) {
+      if (/^\s*[=-]{5,}/.test(line)) return "section";
+      if (/^\s*\|/.test(line)) return "table-row";
+      if (/\[(ERROR|CRITICAL|FATAL)\]|\b(ERROR|CRITICAL|FATAL)\b|Traceback \(most recent call last\)|status=FAIL/.test(line)) {
+        return "error";
+      }
+      if (/\[(WARNING|WARN)\]|\b(WARNING|WARN)\b/.test(line)) return "warning";
+      if (/\[(INFO)\]|\bINFO\b/.test(line)) return "info";
+      if (/\bPASS\b|finished successfully|Successful requests:\s*[1-9]/i.test(line)) return "success";
+      return "";
+    }
+
+    function appendLogToken(target, text, className = "") {
+      if (!text) return;
+      const token = document.createElement("span");
+      if (className) token.className = className;
+      token.textContent = text;
+      target.appendChild(token);
+    }
+
+    function createRichLogLine(line) {
+      const lineElement = document.createElement("span");
+      const tone = classifyLogLine(line);
+      lineElement.className = `log-line${tone ? ` ${tone}` : ""}`;
+
+      const vapMatch = line.match(
+        /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(\s+)\[(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\](\s+)([^:]+:)?(.*)$/
+      );
+      if (vapMatch) {
+        appendLogToken(lineElement, vapMatch[1], "log-time");
+        appendLogToken(lineElement, vapMatch[2]);
+        appendLogToken(lineElement, vapMatch[3], `log-level ${classifyLogLine(vapMatch[3]) || "debug"}`);
+        appendLogToken(lineElement, vapMatch[4]);
+        appendLogToken(lineElement, vapMatch[5], "log-source");
+        appendLogToken(lineElement, vapMatch[6]);
+        return lineElement;
+      }
+
+      const serviceMatch = line.match(
+        /^((?:\([^)]+\)\s+)?)?(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\s+(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(\[[^\]]+\])\s*(.*)$/
+      );
+      if (serviceMatch) {
+        appendLogToken(lineElement, serviceMatch[1], "log-source");
+        appendLogToken(
+          lineElement,
+          serviceMatch[2],
+          `log-level ${classifyLogLine(serviceMatch[2]) || "debug"}`
+        );
+        appendLogToken(lineElement, serviceMatch[3], "log-time");
+        appendLogToken(lineElement, ` ${serviceMatch[4]} `, "log-source");
+        appendLogToken(lineElement, serviceMatch[5]);
+        return lineElement;
+      }
+
+      const metricMatch = line.match(/^(\s*)([^:]{2,64}:)(\s+)(\S.*)$/);
+      if (metricMatch) {
+        appendLogToken(lineElement, metricMatch[1]);
+        appendLogToken(lineElement, metricMatch[2], "log-metric-key");
+        appendLogToken(lineElement, metricMatch[3]);
+        appendLogToken(lineElement, metricMatch[4], "log-metric-value");
+        return lineElement;
+      }
+
+      lineElement.textContent = line || " ";
+      return lineElement;
+    }
+
+    function renderRichLog(target, content) {
+      const fragment = document.createDocumentFragment();
+      content.split("\n").forEach((line) => fragment.appendChild(createRichLogLine(line)));
+      target.replaceChildren(fragment);
+      target._rawLogContent = content;
+    }
+
     function updateLogContent(target, content, options = {}) {
       const nextContent = content || "";
-      const currentContent = target.textContent || "";
+      const currentContent = target._rawLogContent || "";
       if (currentContent === nextContent) return;
       const shouldFollow = options.forceScroll || isNearLogBottom(target);
-      if (!options.forceReplace && nextContent.startsWith(currentContent)) {
-        target.appendChild(document.createTextNode(nextContent.slice(currentContent.length)));
-      } else {
-        target.textContent = nextContent;
-      }
+      renderRichLog(target, nextContent);
       if (shouldFollow) scrollLogToBottom(target);
     }
 
@@ -3104,7 +3269,8 @@
     }
 
     function getLogText(targetId) {
-      return document.getElementById(targetId)?.textContent || "";
+      const target = document.getElementById(targetId);
+      return target?._rawLogContent ?? target?.textContent ?? "";
     }
 
     async function copyLogContent(targetId) {
