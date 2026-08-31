@@ -44,11 +44,12 @@ def clock_summary_rows(session: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def format_clock_summary(session: Mapping[str, Any]) -> str:
-    requested = str(session.get("execution", {}).get("requested_mode") or "unknown")
+    execution = session.get("execution") or {}
     selected = str(
-        session.get("execution", {}).get("selected_mode")
+        execution.get("selected_mode")
         or ("hardware" if session.get("clock_source") == "ptp_hardware" else "software")
     )
+    requested = str(execution.get("requested_mode") or selected)
     lines = [
         (
             f"Clock probe requested={requested}, selected={selected}, "
@@ -71,7 +72,70 @@ def format_clock_summary(session: Mapping[str, Any]) -> str:
                 status=_escape(row["status"]),
             )
         )
+    failures = clock_failure_reasons(session)
+    if failures:
+        lines.append("Clock probe FAIL reasons:")
+        lines.extend(
+            f"- {_one_line(node)}: {_one_line(reason)}" for node, reason in failures
+        )
+    elif str(session.get("status") or "").upper() == "FAIL":
+        lines.append(
+            "Clock probe FAIL reasons:\n"
+            "- cluster: session failed but recorded no detailed reason"
+        )
     return "\n".join(lines)
+
+
+def clock_failure_reasons(
+    session: Mapping[str, Any],
+) -> list[tuple[str, str]]:
+    """Return de-duplicated per-node reasons suitable for operator logs."""
+    failures: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(node: Any, reasons: Any) -> None:
+        node_text = str(node or "cluster")
+        values = (
+            reasons
+            if isinstance(reasons, Sequence) and not isinstance(reasons, (str, bytes))
+            else [reasons]
+        )
+        for reason in values:
+            if reason in (None, "", []):
+                continue
+            item = (node_text, str(reason))
+            if item not in seen:
+                seen.add(item)
+                failures.append(item)
+
+    for failure in session.get("failures", []) or []:
+        if not isinstance(failure, Mapping):
+            add("cluster", failure)
+            continue
+        node = failure.get("hostname")
+        node_payload = failure.get("node")
+        if node is None and isinstance(node_payload, Mapping):
+            node = (
+                node_payload.get("hostname")
+                or node_payload.get("name")
+                or node_payload.get("address")
+                or node_payload.get("node_id")
+            )
+        add(node, failure.get("reasons") or failure.get("error"))
+
+    for model in session.get("models", []) or []:
+        if not isinstance(model, Mapping) or str(model.get("status")).upper() != "FAIL":
+            continue
+        node = _node_name(model)
+        reasons = model.get("fail_reasons")
+        if not reasons:
+            ptp = model.get("ptp")
+            if isinstance(ptp, Mapping):
+                reasons = ptp.get("reasons")
+        add(node, reasons or "model status is FAIL")
+
+    add("cluster", session.get("failure"))
+    return failures
 
 
 def _software_row(
@@ -200,3 +264,8 @@ def _format_us(value: float | None) -> str:
 
 def _escape(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _one_line(value: Any, limit: int = 800) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else f"{text[: limit - 3]}..."

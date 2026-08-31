@@ -43,6 +43,9 @@ docs = [
 [project.scripts]
 vap = "vap.cli:main"
 
+[tool.black]
+target-version = ["py312"]
+
 [tool.isort]
 profile = "black"
 src_paths = ["vap", "tests"]

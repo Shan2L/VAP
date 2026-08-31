@@ -108,7 +108,9 @@ def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
             }
         )
 
-    if not is_valid_port(config.profiler_cfg.tensorboard_port):
+    if config.profiler_cfg.enable and not is_valid_port(
+        config.profiler_cfg.tensorboard_port
+    ):
         errors.append(
             {
                 "path": "profiler_cfg.tensorboard_port",
@@ -140,22 +142,6 @@ def validate_runtime_config(config: VAPConfig) -> list[dict[str, str]]:
                 "message": "Clock probing requires distributed_cfg.enable=true",
             }
         )
-    if clock_probe.enabled and clock_probe.mode == "hardware":
-        if not clock_probe.hardware_interface:
-            errors.append(
-                {
-                    "path": "clock_probe_cfg.hardware_interface",
-                    "message": "Hardware mode requires a network interface",
-                }
-            )
-        if not clock_probe.hardware_phc_device:
-            errors.append(
-                {
-                    "path": "clock_probe_cfg.hardware_phc_device",
-                    "message": "Hardware mode requires a PHC device",
-                }
-            )
-
     local_vllm_port = (
         deploy_port
         if is_valid_port(deploy_port) and deploy_port == bench_port
@@ -180,13 +166,15 @@ def validate_local_service_port_conflicts(
     config: VAPConfig,
     local_vllm_port: int | None,
 ) -> list[dict[str, str]]:
-    ports = [
-        (
-            "profiler_cfg.tensorboard_port",
-            "TensorBoard port",
-            config.profiler_cfg.tensorboard_port,
-        ),
-    ]
+    ports = []
+    if config.profiler_cfg.enable:
+        ports.append(
+            (
+                "profiler_cfg.tensorboard_port",
+                "TensorBoard port",
+                config.profiler_cfg.tensorboard_port,
+            )
+        )
     distributed = config.distributed_cfg
     if distributed is not None and distributed.enable:
         ports.append(
@@ -412,7 +400,10 @@ def build_security_warnings(config: VAPConfig) -> list[dict[str, str]]:
     conflicting_services: list[str] = []
     if config.vllm_deploy_cfg.get("--port") == PERFETTO_PORT:
         conflicting_services.append("vLLM")
-    if config.profiler_cfg.tensorboard_port == PERFETTO_PORT:
+    if (
+        config.profiler_cfg.enable
+        and config.profiler_cfg.tensorboard_port == PERFETTO_PORT
+    ):
         conflicting_services.append("TensorBoard")
     if conflicting_services:
         warnings.append(
@@ -471,6 +462,7 @@ def build_config_summary(config: VAPConfig) -> dict[str, Any]:
         "vllm_host": config.vllm_host,
         "vllm_port": config.vllm_port,
         "distributed": bool(distributed and distributed.enable),
+        "profiler": config.profiler_cfg.enable,
         "node_count": (
             1 + len(distributed.worker_nodes)
             if distributed and distributed.enable

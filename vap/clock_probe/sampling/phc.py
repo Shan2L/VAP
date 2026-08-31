@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import json
 import os
 import re
 import subprocess
@@ -205,7 +206,7 @@ def parse_ethtool_hardware(output: str, interface: str) -> HardwareTimestamping:
 
 
 def inspect_interface_hardware(interface: str) -> HardwareTimestamping:
-    """Run ethtool -T and parse hardware PTP capabilities."""
+    """Inspect hardware PTP capability via ethtool, or sysfs if ethtool is absent."""
     try:
         result = subprocess.run(
             ["ethtool", "-T", interface],
@@ -214,14 +215,44 @@ def inspect_interface_hardware(interface: str) -> HardwareTimestamping:
             text=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError(
-            f"Cannot inspect hardware timestamping on {interface}: {error!r}"
-        ) from error
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return inspect_interface_hardware_from_sysfs(interface)
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "ethtool failed"
-        raise RuntimeError(f"ethtool -T {interface} failed: {detail}")
+        try:
+            return inspect_interface_hardware_from_sysfs(interface)
+        except RuntimeError:
+            detail = result.stderr.strip() or result.stdout.strip() or "ethtool failed"
+            raise RuntimeError(f"ethtool -T {interface} failed: {detail}") from None
     return parse_ethtool_hardware(result.stdout, interface)
+
+
+def sysfs_ptp_index(interface: str) -> int | None:
+    """Return the PHC index advertised under sysfs for one NIC, if any."""
+    ptp_dir = Path("/sys/class/net") / interface / "device" / "ptp"
+    try:
+        names = sorted(
+            path.name for path in ptp_dir.glob("ptp*") if PTP_DEVICE_RE.match(path.name)
+        )
+    except OSError:
+        return None
+    if not names:
+        return None
+    match = PTP_DEVICE_RE.match(names[0])
+    return None if match is None else int(match.group("index"))
+
+
+def inspect_interface_hardware_from_sysfs(interface: str) -> HardwareTimestamping:
+    """Treat a sysfs ``device/ptp/ptpN`` node as hardware-timestamp capable."""
+    index = sysfs_ptp_index(interface)
+    if index is None:
+        raise RuntimeError(f"{interface} has no sysfs PHC under device/ptp")
+    return HardwareTimestamping(
+        interface=interface,
+        hardware_transmit=True,
+        hardware_receive=True,
+        hardware_raw_clock=True,
+        ptp_clock_index=index,
+    )
 
 
 def phc_device_for_index(index: int) -> Path:
@@ -229,6 +260,131 @@ def phc_device_for_index(index: int) -> Path:
     if index < 0:
         raise ValueError("PHC index must be non-negative")
     return Path(f"/dev/ptp{index}")
+
+
+def list_phc_device_paths(dev_root: str | Path = "/dev") -> list[str]:
+    """Return existing `/dev/ptpN` character devices in index order."""
+    return [
+        str(path)
+        for path in sorted(Path(dev_root).glob("ptp[0-9]*"), key=lambda item: item.name)
+        if path.exists()
+    ]
+
+
+def order_hardware_interface_candidates(
+    interfaces: list[dict[str, Any]],
+    *,
+    preferred_interface: str | None = None,
+    node_address: str | None = None,
+    hostname: str = "local",
+) -> list[dict[str, Any]]:
+    """Return UP non-loopback interfaces in hardware-probe preference order."""
+    candidates = [
+        interface
+        for interface in interfaces
+        if interface.get("is_up") and not interface.get("is_loopback")
+    ]
+    if preferred_interface:
+        selected = [
+            interface
+            for interface in candidates
+            if interface.get("name") == preferred_interface
+        ]
+        if not selected:
+            raise RuntimeError(
+                f"Configured interface {preferred_interface!r} is not UP on {hostname}"
+            )
+        return selected
+    return sorted(
+        candidates,
+        key=lambda interface: (
+            node_address not in (interface.get("ipv4_addresses") or []),
+            int(interface.get("index") or 0),
+            str(interface.get("name") or ""),
+        ),
+    )
+
+
+def inspect_interface_phc_capability(
+    interface: str,
+    *,
+    preferred_phc_device: str | None = None,
+    capture: bool = False,
+    require_readable: bool = True,
+) -> dict[str, Any]:
+    """Confirm hardware TX/RX/raw timestamping and a PHC device."""
+    hardware = inspect_interface_hardware(interface)
+    if not hardware.usable:
+        raise RuntimeError(
+            f"{interface} does not advertise hardware TX/RX/raw PTP timestamping"
+        )
+    phc_device = phc_device_for_index(int(hardware.ptp_clock_index))
+    if preferred_phc_device and Path(preferred_phc_device).resolve() != (
+        phc_device.resolve()
+    ):
+        raise RuntimeError(
+            f"{interface} advertised PHC is {phc_device}, not {preferred_phc_device}"
+        )
+    if not phc_device.exists():
+        raise FileNotFoundError(f"PHC device {phc_device} is missing")
+    readable = os.access(phc_device, os.R_OK)
+    if (require_readable or capture) and not readable:
+        raise PermissionError(f"PHC device {phc_device} is not readable")
+    capture_method: str | None = None
+    if capture:
+        assert_phc_matches_interface(interface, phc_device)
+        with PhcClock(phc_device) as phc:
+            sample = capture_phc_sample(phc, attempts=1)
+        capture_method = str(sample["capture_method"])
+    return {
+        "interface": interface,
+        "phc_device": str(phc_device),
+        "capture_method": capture_method,
+        "readable": readable,
+        "hardware_timestamping": hardware.to_dict(),
+    }
+
+
+def discover_hardware_timestamp_phc(
+    interfaces: list[dict[str, Any]],
+    *,
+    preferred_interface: str | None = None,
+    preferred_phc_device: str | None = None,
+    node_address: str | None = None,
+    hostname: str = "local",
+    capture: bool = False,
+    require_readable: bool = True,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Select the first hardware-timestamp-capable PHC on one host."""
+    diagnostics: list[dict[str, Any]] = []
+    for interface in order_hardware_interface_candidates(
+        interfaces,
+        preferred_interface=preferred_interface,
+        node_address=node_address,
+        hostname=hostname,
+    ):
+        name = str(interface["name"])
+        try:
+            selected = inspect_interface_phc_capability(
+                name,
+                preferred_phc_device=preferred_phc_device,
+                capture=capture,
+                require_readable=require_readable,
+            )
+            diagnostics.append({"usable": True, **selected})
+            return selected, diagnostics
+        except (OSError, RuntimeError, ValueError) as error:
+            diagnostics.append(
+                {
+                    "usable": False,
+                    "interface": name,
+                    "reason": str(error),
+                }
+            )
+    raise RuntimeError(
+        "No hardware-timestamp-capable PHC was found: "
+        f"{json.dumps(diagnostics, sort_keys=True)}"
+    )
 
 
 class PhcClock:

@@ -89,6 +89,68 @@ class ClockSummaryTests(unittest.TestCase):
         self.assertEqual(row["network_us"], 0.3)
         self.assertEqual(row["end_to_end_us"], 1.1)
 
+    def test_hardware_fail_session_without_execution_does_not_say_unknown(self) -> None:
+        summary = format_clock_summary(
+            {
+                "clock_source": "ptp_hardware",
+                "status": "FAIL",
+                "models": [],
+            }
+        )
+
+        self.assertIn("requested=hardware", summary)
+        self.assertIn("selected=hardware", summary)
+        self.assertIn("session_status=FAIL", summary)
+        self.assertNotIn("requested=unknown", summary)
+
+    def test_fail_summary_prints_each_recorded_reason(self) -> None:
+        summary = format_clock_summary(
+            {
+                "clock_source": "ptp_hardware",
+                "status": "FAIL",
+                "models": [
+                    {
+                        "model_type": "phc_bridge",
+                        "status": "FAIL",
+                        "source": {"hostname": "cse-ai-6"},
+                        "fail_reasons": [
+                            "ptp4l rms p95 4284.4 ns exceeds 1000.0 ns",
+                            "REALTIME-PHC bridge failed validation",
+                            "total uncertainty 56.440 us exceeds 2.000 us",
+                        ],
+                    }
+                ],
+                "failures": [
+                    {
+                        "hostname": "cse-ai-6",
+                        "reasons": [
+                            "ptp4l rms p95 4284.4 ns exceeds 1000.0 ns",
+                            "REALTIME-PHC bridge failed validation",
+                            "total uncertainty 56.440 us exceeds 2.000 us",
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertIn("Clock probe FAIL reasons:", summary)
+        self.assertIn(
+            "- cse-ai-6: ptp4l rms p95 4284.4 ns exceeds 1000.0 ns",
+            summary,
+        )
+        self.assertIn(
+            "- cse-ai-6: REALTIME-PHC bridge failed validation",
+            summary,
+        )
+        self.assertIn(
+            "- cse-ai-6: total uncertainty 56.440 us exceeds 2.000 us",
+            summary,
+        )
+        self.assertEqual(
+            summary.count("ptp4l rms p95 4284.4 ns exceeds 1000.0 ns"),
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,16 +4,21 @@ import shlex
 import socket
 from typing import List
 
+from vap.clock_probe.execution.host import list_node_phc_devices
 from vap.config import VAPConfig
 from vap.pipelines.pipeline import Pipeline
+from vap.pipelines.services.benchmark import BenchmarkLifecycle
 from vap.pipelines.services.clock_probe import (
     CLOCK_PROBE_SOURCE_DIR,
     ClockProbeLifecycle,
     clock_probe_enabled,
 )
+from vap.pipelines.services.profiler import ProfilerLifecycle, profiler_enabled
+from vap.pipelines.services.ptp4l import Ptp4lLifecycle
 from vap.pipelines.services.ray_cluster import RayClusterLifecycle
 from vap.pipelines.services.trace_postprocessor import (
     CONTAINER_PROFILE_DIR,
+    AlignmentValidationError,
     TracePostprocessor,
 )
 from vap.runners import (
@@ -23,6 +28,12 @@ from vap.runners import (
     MountSpec,
     ProcessHandle,
     UlimitSpec,
+)
+from vap.runners.docker import (
+    VAP_KIND_LABEL,
+    VAP_MANAGED_LABEL,
+    VAP_RUN_LABEL,
+    sweep_vap_containers,
 )
 from vap.runtime_paths import APP_DIR
 from vap.validation import PERFETTO_PORT
@@ -43,8 +54,9 @@ CONTAINER_MODEL_ROOT = "/tmp/vap/models"
 def check_port_availability(config: VAPConfig):
     required_ports = {
         "vLLM": config.vllm_port,
-        "TensorBoard": config.profiler_cfg.tensorboard_port,
     }
+    if profiler_enabled(config):
+        required_ports["TensorBoard"] = config.profiler_cfg.tensorboard_port
     distributed = config.distributed_cfg
     if distributed is not None and distributed.enable:
         required_ports["Ray"] = distributed.ray_port
@@ -57,6 +69,8 @@ def check_port_availability(config: VAPConfig):
         logger.error("%s port %s is not available", name, port)
         raise RuntimeError(f"{name} port {port} is not available")
 
+    if not profiler_enabled(config):
+        return
     if is_port_available(PERFETTO_PORT):
         logger.info("Perfetto Trace Processor port %s is available", PERFETTO_PORT)
     else:
@@ -94,12 +108,22 @@ class TorchProfilingPipeline(Pipeline):
             self.log_path,
             self.date_str,
         )
+        self.ptp4l = Ptp4lLifecycle(
+            self.config,
+            self.log_path,
+            self.date_str,
+            master_inventory=self.master_runner,
+            worker_inventories=self.worker_runners,
+        )
+        self.profiler = ProfilerLifecycle(self.config, self.master_runner)
+        self.benchmark = BenchmarkLifecycle(self.config, self.master_runner)
         self.trace_postprocessor = TracePostprocessor(
             self.config,
             self.log_path,
             self.master_runner,
             self.worker_runners,
         )
+        self._cleanup_started = False
 
     def create_runners(self) -> None:
         workers: List[str] = []
@@ -111,10 +135,28 @@ class TorchProfilingPipeline(Pipeline):
         self.master_peer = workers[0] if workers else None
         self.worker_peer = master_host
         self.master_runner = DockerRunner()
+        ssh_key = distributed.sshkey_path if distributed is not None else None
         for node in workers:
-            self.worker_runners.append(DockerRunner(DockerTarget(hostname=node)))
+            self.worker_runners.append(
+                DockerRunner(DockerTarget(hostname=node, ssh_key=ssh_key))
+            )
+
+    def _sweep_leftover_run_containers(self) -> None:
+        for runner in [self.master_runner, *self.worker_runners]:
+            target = getattr(runner, "target", None)
+            if not isinstance(target, DockerTarget):
+                continue
+            try:
+                sweep_vap_containers(target)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to sweep leftover VAP containers on %s: %s",
+                    target.label,
+                    exc,
+                )
 
     def run_pipeline(self):
+        self._sweep_leftover_run_containers()
         check_port_availability(self.config)
         if not os.path.exists(self.config.model_path):
             logger.error("Model weight %s is not available", self.config.model_path)
@@ -134,9 +176,15 @@ class TorchProfilingPipeline(Pipeline):
             # 2. Distributed runs additionally start worker containers and Ray.
             if distributed:
                 for worker in self.worker_runners:
-                    worker.start(self._container_spec(include_clock_source=False))
+                    worker.start(
+                        self._container_spec(
+                            include_clock_source=False,
+                            hostname=worker.target.hostname,
+                        )
+                    )
             for runner in [self.master_runner, *self.worker_runners]:
                 runner.files.ensure_directory(CONTAINER_PROFILE_DIR)
+                runner.network.ensure_inventory()
             self._check_model_weights()
             if distributed:
                 self.ray_cluster.start()
@@ -145,37 +193,89 @@ class TorchProfilingPipeline(Pipeline):
             self._deploy_model()
             self._wait_for_vllm_ready()
 
-            # 4. Clock probing is only part of enabled distributed runs.
+            # 4. Hardware Clock Probe starts ptp4l sidecars, then samples during the workload.
             if distributed and self.clock_probe.enabled:
-                self.clock_probe.start()
                 profiling_error: BaseException | None = None
                 try:
-                    self._bench_and_profile()
-                except BaseException as exc:
-                    profiling_error = exc
-                    raise
+                    start_probe = True
+                    if self.ptp4l.enabled:
+                        try:
+                            self.ptp4l.start(
+                                node_addresses=self.ray_cluster.runner_node_ids
+                            )
+                            self.clock_probe.set_ptp_logs(
+                                self.ptp4l.container_log_paths
+                            )
+                            self.clock_probe.set_ptp_nodes(self.ptp4l.node_descriptors)
+                        except Exception as exc:
+                            if self.clock_probe.required:
+                                raise
+                            logger.warning(
+                                "ptp4l sidecars failed; continuing without "
+                                "hardware PTP lock: %s",
+                                exc,
+                            )
+                            if self.config.clock_probe_cfg.mode == "hardware":
+                                start_probe = False
+                                logger.warning(
+                                    "Skipping clock probe because ptp4l did not lock"
+                                )
+                    if start_probe:
+                        self.clock_probe.start()
+                    try:
+                        self._run_workload()
+                    except BaseException as exc:
+                        profiling_error = exc
+                        raise
+                    finally:
+                        if start_probe:
+                            try:
+                                self.clock_probe.stop()
+                            except Exception as exc:
+                                if profiling_error is None:
+                                    profiling_error = exc
+                                    raise
+                                logger.error(
+                                    "Clock probe stop also failed after profiling "
+                                    "error: %s",
+                                    exc,
+                                )
                 finally:
                     try:
-                        self.clock_probe.stop()
+                        self.ptp4l.stop()
                     except Exception as exc:
-                        if profiling_error is None:
+                        if self.clock_probe.required and profiling_error is None:
                             raise
-                        logger.error(
-                            "Clock probe stop also failed after profiling " "error: %s",
-                            exc,
-                        )
+                        if profiling_error is None:
+                            logger.warning(
+                                "Optional ptp4l cleanup failed after a successful "
+                                "workload: %s",
+                                exc,
+                            )
+                        else:
+                            logger.error(
+                                "ptp4l stop also failed after profiling error: %s",
+                                exc,
+                            )
             else:
-                self._bench_and_profile()
+                self._run_workload()
 
             # 5. Wait for finalized traces and collect worker artifacts.
-            self.trace_postprocessor.wait_for_trace_files()
-            if distributed:
-                self.trace_postprocessor.collect_worker_traces()
+            if self.profiler.enabled:
+                self.trace_postprocessor.wait_for_trace_files()
+                if distributed:
+                    self.trace_postprocessor.collect_worker_traces()
         except Exception as exc:
             logger.error("Error: %s", exc)
             raise
         finally:
             self.cleanup()
+
+        if not self.profiler.enabled:
+            logger.info(
+                "Profiler is disabled; skipping trace post-processing and visualization"
+            )
+            return
 
         # 6. Build rank inputs, optionally align, then fuse when needed.
         profile_dir = self.trace_postprocessor.profile_dir
@@ -188,7 +288,8 @@ class TorchProfilingPipeline(Pipeline):
                 rank: str(trace.path) for rank, trace in trace_inputs.items()
             }
             aligned = False
-            if self.clock_probe.enabled:
+            raw_fallback = False
+            if self.clock_probe.enabled and self.clock_probe.has_session:
                 try:
                     traces_to_fuse = self.trace_postprocessor.align_trace_files(
                         trace_inputs,
@@ -196,18 +297,37 @@ class TorchProfilingPipeline(Pipeline):
                         self.clock_probe.local_session_path,
                     )
                     aligned = True
+                except AlignmentValidationError as exc:
+                    if self.clock_probe.required:
+                        raise RuntimeError(f"Trace validation failed: {exc}") from exc
+                    raw_fallback = True
+                    logger.warning(
+                        "Clock timestamp mapping completed, but causal validation "
+                        "rejected it; using explicitly marked raw fallback traces. "
+                        "Manifest: %s; reason: %s",
+                        exc.manifest_path,
+                        exc,
+                    )
                 except Exception as exc:
                     if self.clock_probe.required:
                         raise RuntimeError(f"Trace alignment failed: {exc}") from exc
+                    raw_fallback = True
                     logger.warning(
                         "Trace alignment failed; falling back to raw "
                         "distributed traces: %s",
                         exc,
                     )
+            elif self.clock_probe.enabled:
+                raw_fallback = True
+                logger.warning(
+                    "Clock Probe produced no session; skipping alignment and using "
+                    "explicitly marked raw fallback traces"
+                )
             trace_path = self.trace_postprocessor.fuse_trace_files(
                 traces_to_fuse,
                 profile_dir,
                 aligned=aligned,
+                raw_fallback=raw_fallback,
             )
         else:
             trace_path = self.trace_postprocessor.prepare_single_node_trace(profile_dir)
@@ -245,24 +365,39 @@ class TorchProfilingPipeline(Pipeline):
             write_visualization_pids(self.log_path, {})
 
     def cleanup(self) -> None:
-        if self.clock_probe.active:
-            self.clock_probe.cleanup()
-        if self._vllm_process is not None and self.master_runner.is_started:
+        if getattr(self, "_cleanup_started", False):
+            return
+        self._cleanup_started = True
+        try:
+            if self.clock_probe.active:
+                self.clock_probe.cleanup()
+            if self.profiler.active:
+                self.profiler.cleanup()
+            if self._vllm_process is not None and self.master_runner.is_started:
+                try:
+                    self.master_runner.process.terminate(self._vllm_process)
+                except Exception as exc:
+                    logger.warning("Failed to terminate vLLM process cleanly: %s", exc)
+                self._vllm_process = None
+            if self.ray_cluster.processes:
+                self.ray_cluster.cleanup()
+        except Exception:
+            logger.exception("Failed to stop VAP services during cleanup")
+        finally:
             try:
-                self.master_runner.process.terminate(self._vllm_process)
+                self.ptp4l.cleanup()
             except Exception as exc:
-                logger.warning("Failed to terminate vLLM process cleanly: %s", exc)
-            self._vllm_process = None
-        if self.ray_cluster.processes:
-            self.ray_cluster.cleanup()
-        for runner in reversed(self.worker_runners):
-            runner.cleanup()
-        self.master_runner.cleanup()
+                logger.warning("Failed to clean up ptp4l sidecars: %s", exc)
+            for runner in reversed(self.worker_runners):
+                runner.cleanup()
+            self.master_runner.cleanup()
 
     def _container_spec(
         self,
         *,
         include_clock_source: bool = True,
+        hostname: str | None = None,
+        phc_devices: list[str] | None = None,
     ) -> ContainerSpec:
         container_cfg = self.config.container_cfg
         mounts = [
@@ -298,8 +433,23 @@ class TorchProfilingPipeline(Pipeline):
         os.makedirs(os.path.join(self.log_path, "vllm-profile"), exist_ok=True)
         devices = ["/dev/kfd", "/dev/mem"]
         devices.extend(container_cfg.devices or ["/dev/dri/"])
-        if self.clock_probe.enabled and clock_probe.hardware_phc_device:
-            devices.append(clock_probe.hardware_phc_device)
+        if self.clock_probe.enabled and clock_probe.mode != "software":
+            if phc_devices is None:
+                if clock_probe.hardware_phc_device and hostname is None:
+                    phc_devices = [clock_probe.hardware_phc_device]
+                else:
+                    ssh_key = (
+                        self.config.distributed_cfg.sshkey_path
+                        if self.config.distributed_cfg is not None
+                        else None
+                    )
+                    phc_devices = list_node_phc_devices(hostname, ssh_key=ssh_key)
+            selected_phc = list(phc_devices)
+            if clock_probe.mode == "hardware" and not selected_phc:
+                raise RuntimeError(
+                    "Hardware Clock Probe requires at least one /dev/ptpN device"
+                )
+            devices.extend(selected_phc)
         safe_model_name = self.config.model_cfg.model_name.replace("/", "_")
         return ContainerSpec(
             image=self.config.docker_image,
@@ -307,6 +457,11 @@ class TorchProfilingPipeline(Pipeline):
             mounts=tuple(mounts),
             devices=tuple(dict.fromkeys(devices)),
             environment=dict(container_cfg.env_vars or {}),
+            labels={
+                VAP_MANAGED_LABEL: "true",
+                VAP_RUN_LABEL: self.date_str,
+                VAP_KIND_LABEL: "runner",
+            },
             cap_add=("SYS_ADMIN", "SYS_PTRACE"),
             group_add=("video",),
             security_opt=("seccomp=unconfined",),
@@ -379,53 +534,21 @@ class TorchProfilingPipeline(Pipeline):
             poll_interval_sec=poll_interval_sec,
         )
 
-    def _bench_and_profile(self) -> None:
-        port = self.config.vllm_port
-        start_url = f"http://127.0.0.1:{port}/start_profile"
-        stop_url = f"http://127.0.0.1:{port}/stop_profile"
-        start_status = self.master_runner.network.http_status(
-            start_url,
-            method="POST",
-            timeout_sec=10,
-        )
-        if start_status is None or not 200 <= start_status < 300:
-            raise RuntimeError(f"Failed to start vLLM profiler: HTTP {start_status}")
-
-        bench_command = shlex.join(
-            ["vllm", "bench", "serve", *self.config.vllm_bench_args()]
-        )
-        shell_command = (
-            "set -o pipefail; "
-            f"{bench_command} 2>&1 | tee /app/VAP/log/vllm_bench.log"
-        )
-        logger.debug("Benchmark command: %s", shell_command)
-        benchmark_error: BaseException | None = None
+    def _run_workload(self) -> None:
+        self.profiler.start()
+        workload_error: BaseException | None = None
         try:
-            result = self.master_runner.process.run_shell(
-                shell_command,
-                demux=True,
-            )
-            if result.exit_code != 0:
-                logger.error(
-                    "Benchmark failed (exit %s): %s",
-                    result.exit_code,
-                    result.combined_text,
-                )
-                raise RuntimeError(
-                    f"vllm bench failed with exit code {result.exit_code}"
-                )
-            logger.info("Benchmark finished successfully")
+            self.benchmark.run()
         except BaseException as exc:
-            benchmark_error = exc
+            workload_error = exc
             raise
         finally:
-            stop_status = self.master_runner.network.http_status(
-                stop_url,
-                method="POST",
-                timeout_sec=10,
-            )
-            if stop_status is None or not 200 <= stop_status < 300:
-                message = f"Failed to stop vLLM profiler cleanly: HTTP {stop_status}"
-                if benchmark_error is None:
-                    raise RuntimeError(message)
-                logger.error("%s; benchmark also failed", message)
+            try:
+                self.profiler.stop()
+            except Exception as exc:
+                if workload_error is None:
+                    raise
+                logger.error(
+                    "Profiler stop also failed after benchmark error: %s",
+                    exc,
+                )

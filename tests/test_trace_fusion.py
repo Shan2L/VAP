@@ -159,6 +159,95 @@ class TraceFusionTests(unittest.TestCase):
         self.assertEqual(report.status, "FAIL")
         self.assertTrue(any("input ranks [1]" in note for note in report.notes))
 
+    def test_nccl_fingerprint_matching_respects_process_group_membership(self) -> None:
+        def events(process_group: str, ranks: list[int]) -> list[dict]:
+            comms = {
+                "ph": "X",
+                "cat": "cpu_op",
+                "name": "record_param_comms",
+                "pid": 1,
+                "tid": 0,
+                "ts": 0.5,
+                "dur": 0.1,
+                "args": {
+                    "External id": 10,
+                    "Collective name": "all_reduce",
+                    "Process Group Name": process_group,
+                    "Process Group Ranks": str(ranks),
+                    "Group size": len(ranks),
+                    "In msg nelems": 1024,
+                    "Out msg nelems": 1024,
+                    "dtype": "float16",
+                },
+            }
+            kernel = {
+                "ph": "X",
+                "cat": "kernel",
+                "name": "ncclDevKernel_Generic",
+                "pid": 2,
+                "tid": 0,
+                "ts": 1.0,
+                "dur": 2.0,
+                "args": {"External id": 10, "stream": 0, "correlation": 1},
+            }
+            return [comms, kernel]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            traces: dict[int, Path] = {}
+            for rank in range(4):
+                ranks = [0, 1] if rank < 2 else [2, 3]
+                path = root / f"rank{rank}.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "baseTimeNanoseconds": 0,
+                            "traceEvents": events("shared", ranks),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                traces[rank] = path
+
+            report = check_nccl_traces(traces, uncertainty_us=1.0)
+
+        self.assertEqual(report.status, "PASS")
+        self.assertEqual(report.matching_mode, "fingerprint")
+        self.assertEqual(report.matched_collectives, 2)
+
+    def test_nccl_fingerprint_matching_fails_closed_without_group_ranks(self) -> None:
+        kernel = {
+            "ph": "X",
+            "cat": "kernel",
+            "name": "ncclDevKernel_Generic",
+            "pid": 2,
+            "tid": 0,
+            "ts": 1.0,
+            "dur": 2.0,
+            "args": {"stream": 0, "correlation": 1},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            traces: dict[int, Path] = {}
+            for rank in range(2):
+                path = root / f"rank{rank}.json"
+                path.write_text(
+                    json.dumps(
+                        {"baseTimeNanoseconds": 0, "traceEvents": [kernel]},
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                traces[rank] = path
+
+            report = check_nccl_traces(traces, uncertainty_us=1.0)
+
+        self.assertEqual(report.status, "FAIL")
+        self.assertTrue(
+            any("Insufficient NCCL metadata" in note for note in report.notes)
+        )
+
     def test_alignment_materializes_gzip_traces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

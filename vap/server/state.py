@@ -13,6 +13,10 @@ from typing import Any
 from vap.runtime_paths import APP_DIR
 from vap.server import settings
 
+# Docker stop defaults to 10s per container; a distributed run may have
+# master + workers + ptp4l sidecars. SIGKILL before that skips container cleanup.
+STOP_CLEANUP_GRACE_SEC = 60.0
+
 
 def process_start_ticks(pid: int) -> int | None:
     try:
@@ -338,7 +342,7 @@ def _start_vap_run(config_path: Path | None = None) -> dict[str, Any]:
     thread.start()
     if stop_requested:
         terminate_run_process(process)
-        force_kill_process_group_later(process)
+        force_kill_process_group_later(process, timeout_sec=STOP_CLEANUP_GRACE_SEC)
     return get_run_state_snapshot()
 
 
@@ -505,6 +509,11 @@ def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
 
 
 def stop_vap_run() -> dict[str, Any]:
+    send_signal = False
+    already_stopping = False
+    is_starting = False
+    process: subprocess.Popen[str] | None = None
+    run_dir: Path | None = None
     with settings.RUN_LOCK:
         process = settings.RUN_STATE["process"]
         run_dir = (
@@ -512,27 +521,38 @@ def stop_vap_run() -> dict[str, Any]:
             if settings.RUN_STATE["run_dir"]
             else None
         )
+        already_stopping = bool(settings.RUN_STATE["stop_requested"])
         is_starting = settings.RUN_STATE["running"] and process is None
         if is_starting:
             settings.RUN_STATE["stop_requested"] = True
-            settings.RUN_STATE[
-                "output"
-            ] += "\n--- Stop requested while VAP is starting ---\n"
+            if not already_stopping:
+                settings.RUN_STATE[
+                    "output"
+                ] += "\n--- Stop requested while VAP is starting ---\n"
+        elif process is not None and process.poll() is None and not already_stopping:
+            settings.RUN_STATE["stop_requested"] = True
+            settings.RUN_STATE["output"] += "\n--- Stop requested from UI ---\n"
+            send_signal = True
     if is_starting:
         return {
             "message": "Stop requested. VAP will be terminated as soon as it starts.",
             **get_run_state_snapshot(),
         }
-    if process is None or process.poll() is not None:
+    if send_signal and process is not None:
+        terminate_run_process(process)
+        force_kill_process_group_later(process, timeout_sec=STOP_CLEANUP_GRACE_SEC)
         terminate_recorded_visualization_pids(run_dir)
-        return {"message": "There is no active VAP run", **get_run_state_snapshot()}
-    terminate_run_process(process)
-    force_kill_process_group_later(process)
+        return {
+            "message": (
+                "Stop signal sent. The VAP workflow and its child processes "
+                "will be stopped."
+            ),
+            **get_run_state_snapshot(),
+        }
+    if already_stopping and process is not None and process.poll() is None:
+        return {
+            "message": "Stop already in progress. Waiting for container cleanup to finish.",
+            **get_run_state_snapshot(),
+        }
     terminate_recorded_visualization_pids(run_dir)
-    with settings.RUN_LOCK:
-        settings.RUN_STATE["stop_requested"] = True
-        settings.RUN_STATE["output"] += "\n--- Stop requested from UI ---\n"
-    return {
-        "message": "Stop signal sent. The VAP workflow and its child processes will be stopped.",
-        **get_run_state_snapshot(),
-    }
+    return {"message": "There is no active VAP run", **get_run_state_snapshot()}

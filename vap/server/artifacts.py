@@ -185,6 +185,10 @@ def _profile_archive_files(
             resolved = path.resolve()
             if not resolved.is_relative_to(artifact_root):
                 continue
+            if artifact_root == profile_dir:
+                relative = resolved.relative_to(profile_dir)
+                if relative.parts[:2] == ("aligned", "raw"):
+                    continue
             size = resolved.stat().st_size
             total_size += size
             if len(files) >= settings.MAX_PROFILE_ARCHIVE_FILES:

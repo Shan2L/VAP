@@ -27,6 +27,7 @@ class CommandResult:
 class ProcessHandle:
     exec_id: str
     command: tuple[str, ...]
+    pid_file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class ContainerSpec:
     mounts: tuple[MountSpec, ...] = ()
     devices: tuple[str, ...] = ()
     environment: Mapping[str, str] = field(default_factory=dict)
+    labels: Mapping[str, str] = field(default_factory=dict)
     command: tuple[str, ...] = ("/bin/bash", "-c", "sleep infinity")
     entrypoint: tuple[str, ...] = ()
     ipc_mode: str = "host"
@@ -75,6 +77,7 @@ class ContainerSpec:
 @dataclass(frozen=True)
 class DockerTarget:
     hostname: str | None = None
+    ssh_key: str | None = None
 
     @property
     def label(self) -> str:

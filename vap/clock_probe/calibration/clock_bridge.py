@@ -151,7 +151,27 @@ def _group_segments(
         previous_offset_ns = offset_ns
     if current:
         groups.append((current, step_before_current))
-    return groups
+    return _coalesce_short_groups(groups, config.min_segment_samples)
+
+
+def _coalesce_short_groups(
+    groups: list[tuple[list[dict[str, float]], bool]],
+    min_segment_samples: int,
+) -> list[tuple[list[dict[str, float]], bool]]:
+    """Fold leftover tails into the previous segment.
+
+    A leftover group with fewer than ``min_segment_samples`` is common at
+    the end of a run or a time-split. Treating it as a skipped affine group
+    rejects an otherwise valid fit.
+    """
+    coalesced: list[tuple[list[dict[str, float]], bool]] = []
+    for group, step_before in groups:
+        if coalesced and len(group) < min_segment_samples and not step_before:
+            previous, previous_step = coalesced[-1]
+            coalesced[-1] = (previous + group, previous_step)
+            continue
+        coalesced.append((group, step_before))
+    return coalesced
 
 
 def _build_segment(

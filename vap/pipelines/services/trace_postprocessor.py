@@ -28,6 +28,14 @@ RAW_TRACE_SUFFIXES = (
 )
 
 
+class AlignmentValidationError(RuntimeError):
+    """Timestamp mapping completed, but causal validation rejected it."""
+
+    def __init__(self, message: str, *, manifest_path: str):
+        super().__init__(message)
+        self.manifest_path = manifest_path
+
+
 class TracePostprocessor:
     """Collect, validate, align, and fuse traces from a profiling run."""
 
@@ -69,25 +77,29 @@ class TracePostprocessor:
         deadline = time.monotonic() + timeout_sec
 
         while time.monotonic() < deadline:
-            snapshots = {
-                runner.target.label: runner.files.directory_snapshot(
+            snapshots: dict[str, dict[str, tuple[int, int]]] = {}
+            for runner in runners:
+                raw_snapshot = runner.files.directory_snapshot(
                     CONTAINER_PROFILE_DIR,
                     RAW_TRACE_SUFFIXES,
                 )
-                for runner in runners
-            }
+                rank_snapshot: dict[str, tuple[int, int]] = {}
+                for name, metadata in raw_snapshot.items():
+                    if "merged_trace" in name or "merge_trace" in name:
+                        continue
+                    try:
+                        trace_rank(name)
+                    except ValueError:
+                        continue
+                    rank_snapshot[name] = metadata
+                snapshots[runner.target.label] = rank_snapshot
             rank_counts: dict[int, int] = {}
             all_nonempty = True
             for snapshot in snapshots.values():
                 for name, (size, _mtime_ns) in snapshot.items():
-                    if "merged_trace" in name or "merge_trace" in name:
-                        continue
                     if size <= 0:
                         all_nonempty = False
-                    try:
-                        rank = trace_rank(name)
-                    except ValueError:
-                        continue
+                    rank = trace_rank(name)
                     rank_counts[rank] = rank_counts.get(rank, 0) + 1
 
             complete = (
@@ -140,7 +152,9 @@ class TracePostprocessor:
             trace_names = sorted(
                 name
                 for name in snapshot
-                if "merged_trace" not in name and "merge_trace" not in name
+                if "merged_trace" not in name
+                and "merge_trace" not in name
+                and self._is_rank_trace(name)
             )
             downloaded = worker.files.download_files(
                 CONTAINER_PROFILE_DIR,
@@ -179,8 +193,11 @@ class TracePostprocessor:
             return manifest.clc
         if manifest.primary_timeline == "aligned":
             return manifest.aligned
-        raise RuntimeError(
-            "Clock validation did not approve an aligned primary timeline"
+        manifest_path = os.path.join(alignment_dir, "manifest.json")
+        raise AlignmentValidationError(
+            "Clock timestamp mapping completed, but causal validation did not "
+            f"approve an aligned primary timeline (status={manifest.status})",
+            manifest_path=manifest_path,
         )
 
     def prepare_single_node_trace(self, profile_dir: str) -> str | None:
@@ -190,7 +207,15 @@ class TracePostprocessor:
 
         ranked_traces: dict[int, str] = {}
         for path in local_traces:
-            rank = trace_rank(path)
+            try:
+                rank = trace_rank(path)
+            except ValueError:
+                logger.info(
+                    "Skipping non-rank profiler trace during single-node "
+                    "post-processing: %s",
+                    path,
+                )
+                continue
             if rank in ranked_traces:
                 raise RuntimeError(
                     f"Multiple trace files were produced for rank {rank}"
@@ -211,12 +236,18 @@ class TracePostprocessor:
         profile_dir: str,
         *,
         aligned: bool,
+        raw_fallback: bool = False,
     ) -> str:
         output_file = merged_trace_output_file(profile_dir, self.config)
         if aligned:
             output_file = output_file.replace(
                 "-merged_trace.json",
                 "-aligned-merged_trace.json",
+            )
+        elif raw_fallback:
+            output_file = output_file.replace(
+                "-merged_trace.json",
+                "-raw-fallback-merged_trace.json",
             )
         logger.info(
             "Fusing %d %s traces",
@@ -235,9 +266,29 @@ class TracePostprocessor:
         if not master_node:
             raise RuntimeError("Ray master node identity is unavailable")
 
-        located: list[tuple[str, str]] = [
-            (path, master_node) for path in collect_pytorch_trace_files(profile_dir)
-        ]
+        traces: dict[int, TraceInput] = {}
+
+        def add_rank_trace(path: str, source_node: str) -> None:
+            try:
+                rank = trace_rank(path)
+            except ValueError:
+                logger.info(
+                    "Skipping non-rank profiler trace during distributed alignment: %s",
+                    path,
+                )
+                return
+            if rank in traces:
+                raise RuntimeError(
+                    f"Multiple trace files were produced for rank {rank}"
+                )
+            traces[rank] = TraceInput(
+                path=Path(path),
+                source_node=source_node,
+            )
+
+        for path in collect_pytorch_trace_files(profile_dir):
+            add_rank_trace(path, master_node)
+
         worker_traces = (
             self._worker_trace_files
             if worker_trace_files is None
@@ -249,19 +300,9 @@ class TracePostprocessor:
                 raise RuntimeError(
                     f"Ray node identity is unavailable for {worker_label}"
                 )
-            located.extend((path, source_node) for path in paths)
+            for path in paths:
+                add_rank_trace(path, source_node)
 
-        traces: dict[int, TraceInput] = {}
-        for path, source_node in located:
-            rank = trace_rank(path)
-            if rank in traces:
-                raise RuntimeError(
-                    f"Multiple trace files were produced for rank {rank}"
-                )
-            traces[rank] = TraceInput(
-                path=Path(path),
-                source_node=source_node,
-            )
         self.validate_trace_ranks(traces)
         return traces
 
@@ -280,3 +321,11 @@ class TracePostprocessor:
 
     def expected_trace_ranks(self) -> set[int]:
         return set(range(self.config.parallel_world_size))
+
+    @staticmethod
+    def _is_rank_trace(path: str | os.PathLike[str]) -> bool:
+        try:
+            trace_rank(path)
+        except ValueError:
+            return False
+        return True

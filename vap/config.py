@@ -24,12 +24,13 @@ class DistributedConfig(StrictBaseModel):
     enable: bool
     ray_port: int = Field(ge=1, le=65535)
     worker_nodes: List[str]
+    sshkey_path: Optional[str] = None
 
 
 class ClockProbeConfig(StrictBaseModel):
     enabled: bool = False
     apply_clc_on_warning: bool = False
-    mode: Literal["auto", "hardware", "software"] = "software"
+    mode: Literal["auto", "hardware", "software"] = "hardware"
     required: bool = False
     ray_address: str = "auto"
     port: int = Field(default=31990, ge=1, le=65535)
@@ -41,6 +42,7 @@ class ClockProbeConfig(StrictBaseModel):
 
 
 class ProfilerConfig(StrictBaseModel):
+    enable: bool = True
     profiler: str
     torch_profiler_dir: str
     torch_profiler_record_shapes: bool
@@ -106,7 +108,11 @@ class VAPConfig(StrictBaseModel):
 
     def build_profiler_cli_args_dict(self) -> dict[str, object]:
         args: dict[str, object] = {}
-        for k, v in self.profiler_cfg.model_dump(exclude={"tensorboard_port"}).items():
+        if not self.profiler_cfg.enable:
+            return args
+        for k, v in self.profiler_cfg.model_dump(
+            exclude={"enable", "tensorboard_port"}
+        ).items():
             if isinstance(v, bool):
                 v = str(v).lower()
             args[f"--profiler-config.{k}"] = v

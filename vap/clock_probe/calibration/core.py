@@ -137,18 +137,42 @@ def select_candidate(  # pylint: disable=too-many-arguments,too-many-locals
             entry.update(status="REJECTED", score=None, error=str(error))
         leaderboard.append(entry)
     if not viable:
-        raise ValueError("No calibration candidate passed validation")
+        summary = "; ".join(
+            f"{entry.get('method', entry.get('model_method', 'candidate'))}"
+            f"={entry.get('status')}"
+            + (f" ({entry['error']})" if entry.get("error") else "")
+            for entry in leaderboard
+        )
+        raise ValueError(
+            "No calibration candidate passed validation"
+            + (f": {summary}" if summary else "")
+        )
     viable.sort(key=lambda item: item[0])
     winner = viable[0][1]
+    validation_score: dict[str, float] = {}
+    validation_passed = False
+    for _, candidate in viable:
+        try:
+            validation_payload = build(candidate.value, validation)
+            metrics = score(validation_payload)
+        except (ValueError, ZeroDivisionError):
+            continue
+        payload_passed = validation_payload.get("status") == "PASS"
+        over_budget = budget is not None and metrics[objective_key] > budget
+        if not payload_passed or over_budget:
+            continue
+        winner = candidate
+        validation_score = metrics
+        validation_passed = True
+        break
 
-    validation_payload = build(winner.value, validation)
-    validation_score = score(validation_payload)
-    validation_passed = validation_payload.get("status") == "PASS"
-    if budget is not None and validation_score[objective_key] > budget:
-        validation_passed = False
-
-    final_payload = build(winner.value, samples)
-    final_score = score(final_payload)
+    try:
+        final_payload = build(winner.value, samples)
+        final_score = score(final_payload)
+    except (ValueError, ZeroDivisionError) as error:
+        raise ValueError(
+            f"Selected calibration candidate failed on full data: {error}"
+        ) from error
     if not validation_passed:
         if mark_failed is not None:
             mark_failed(final_payload)

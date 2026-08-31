@@ -4,6 +4,7 @@ import io
 import json
 import os
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -74,7 +75,9 @@ from vap.agent import runtime as agent_runtime
 from vap.agent import tools as agent_tools
 from vap.clock_probe.execution import ray as clock_ray
 from vap.pipelines import torch_profiling_pipeline as torch_pipeline
+from vap.pipelines.services import benchmark as benchmark_service
 from vap.pipelines.services import clock_probe as clock_probe_service
+from vap.pipelines.services import profiler as profiler_service
 from vap.pipelines.services import ray_cluster as ray_cluster_service
 from vap.pipelines.services import trace_postprocessor as trace_service
 from vap.runners import CommandResult
@@ -154,6 +157,149 @@ class ConfigSecurityTests(unittest.TestCase):
         self.assertTrue(result["summary"]["distributed"])
         self.assertFalse(
             any(warning["path"] == "distributed_cfg" for warning in result["warnings"])
+        )
+
+    def test_clock_probe_hardware_mode_does_not_require_static_phc_fields(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "hardware"
+        payload["clock_probe_cfg"]["hardware_interface"] = None
+        payload["clock_probe_cfg"]["hardware_phc_device"] = None
+
+        result = validation.validate_config_payload(payload)
+
+        self.assertTrue(result["valid"])
+
+    def test_model_resource_check_does_not_wait_on_worker_docker(self) -> None:
+        payload = example_payload()
+        with patch.object(server_checks, "check_docker_image") as check_image:
+            result = server_checks.check_config_model_resources(payload)
+
+        check_image.assert_not_called()
+        self.assertTrue(
+            all(check["name"].startswith("Model") for check in result["checks"])
+        )
+
+    def test_clock_probe_check_skips_hardware_scan_when_disabled(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = False
+        with patch.object(
+            server_checks,
+            "inspect_node_hardware_timestamping",
+        ) as inspect:
+            result = server_checks.check_config_clock_probe(payload)
+
+        inspect.assert_not_called()
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["message"], "Clock probe is disabled")
+
+    def test_clock_probe_hardware_check_blocks_unusable_nodes(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "hardware"
+
+        def inspect(*, node: str, **kwargs):
+            return {
+                "node": node,
+                "usable": node == "local",
+                "message": f"{node}: ok" if node == "local" else f"{node}: no PHC",
+            }
+
+        with patch.object(
+            server_checks,
+            "inspect_node_hardware_timestamping",
+            side_effect=inspect,
+        ):
+            result = server_checks.check_config_clock_probe(payload)
+
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("no PHC" in item["message"] for item in result["nodes"]))
+        self.assertEqual(result["warnings"], [])
+
+    def test_clock_probe_hardware_unreadable_phc_still_passes(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "hardware"
+
+        def inspect(*, node: str, **kwargs):
+            self.assertFalse(kwargs["require_readable"])
+            self.assertFalse(kwargs["capture"])
+            return {
+                "node": node,
+                "usable": True,
+                "readable": False,
+                "phc_device": "/dev/ptp0",
+                "interface": "enp4s0f0np0",
+                "message": (
+                    f"{node}: enp4s0f0np0 -> /dev/ptp0 "
+                    "(not readable as this user; the run container will mount it)"
+                ),
+            }
+
+        with patch.object(
+            server_checks,
+            "inspect_node_hardware_timestamping",
+            side_effect=inspect,
+        ):
+            result = server_checks.check_config_clock_probe(payload)
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["warnings"], [])
+        self.assertIn("not readable as this user", result["message"])
+
+    def test_clock_probe_auto_mode_does_not_block_on_hardware_failure(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "auto"
+
+        with patch.object(
+            server_checks,
+            "inspect_node_hardware_timestamping",
+            return_value={"node": "local", "usable": False, "message": "no PHC"},
+        ):
+            result = server_checks.check_config_clock_probe(payload)
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["mode"], "auto")
+
+    def test_clock_probe_check_requires_distributed_enable(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["distributed_cfg"]["enable"] = False
+
+        result = server_checks.check_config_clock_probe(payload)
+
+        self.assertFalse(result["valid"])
+        self.assertIn("distributed_cfg.enable=true", result["message"])
+
+    def test_worker_container_keeps_that_host_phc_devices(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        parsed = config.VAPConfig.model_validate(payload)
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.config = parsed
+        pipeline.date_str = "20260101"
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.enabled = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline.log_path = tmp
+            with patch.object(
+                torch_pipeline,
+                "list_node_phc_devices",
+                return_value=["/dev/ptp2"],
+            ) as list_phc:
+                spec = pipeline._container_spec(
+                    include_clock_source=False,
+                    hostname="cse-ai-10.amd.com",
+                )
+
+        self.assertIn("/dev/ptp2", spec.devices)
+        list_phc.assert_called_once_with(
+            "cse-ai-10.amd.com",
+            ssh_key=parsed.distributed_cfg.sshkey_path,
         )
 
     def test_clock_probe_requires_distributed_mode(self) -> None:
@@ -308,10 +454,13 @@ class ServerAuthorizationTests(unittest.TestCase):
         )
 
     def test_perfetto_port_check_is_non_blocking(self) -> None:
-        with patch.object(
-            server_checks,
-            "is_local_port_available",
-            side_effect=lambda port: port != server_settings.PERFETTO_PORT,
+        with (
+            patch.object(
+                server_checks,
+                "is_local_port_available",
+                side_effect=lambda port: port != server_settings.PERFETTO_PORT,
+            ),
+            patch.object(server_checks, "sweep_vap_containers"),
         ):
             result = server_checks.check_config_ports(example_payload())
 
@@ -325,13 +474,71 @@ class ServerAuthorizationTests(unittest.TestCase):
         self.assertFalse(perfetto["blocking"])
         self.assertIn("will be skipped", perfetto["message"])
 
-    def test_remote_docker_image_uses_worker_docker_client(self) -> None:
-        client = Mock()
+    def test_disabled_profiler_skips_visualization_port_checks(self) -> None:
+        payload = example_payload()
+        payload["profiler_cfg"]["enable"] = False
+        with (
+            patch.object(server_checks, "is_local_port_available", return_value=True),
+            patch.object(server_checks, "sweep_vap_containers"),
+        ):
+            result = server_checks.check_config_ports(payload)
+
+        names = [port["name"] for port in result["ports"]]
+        self.assertTrue(result["valid"])
+        self.assertIn("vLLM service port", names)
+        self.assertNotIn("TensorBoard port", names)
+        self.assertNotIn("Perfetto Trace Processor port", names)
+
+    def test_idle_port_check_sweeps_leftover_vap_containers(self) -> None:
+        payload = example_payload()
+        payload["profiler_cfg"]["enable"] = False
+        with (
+            patch.object(server_checks, "_vap_run_is_active", return_value=False),
+            patch.object(server_checks, "sweep_vap_containers") as sweep,
+            patch.object(server_checks, "is_local_port_available", return_value=True),
+        ):
+            result = server_checks.check_config_ports(payload)
+
+        sweep.assert_called_once()
+        self.assertTrue(result["valid"])
+
+    def test_active_run_port_check_does_not_sweep_containers(self) -> None:
+        payload = example_payload()
+        payload["profiler_cfg"]["enable"] = False
+        with (
+            patch.object(server_checks, "_vap_run_is_active", return_value=True),
+            patch.object(server_checks, "sweep_vap_containers") as sweep,
+            patch.object(server_checks, "is_local_port_available", return_value=True),
+        ):
+            server_checks.check_config_ports(payload)
+
+        sweep.assert_not_called()
+
+    def test_local_port_available_detects_listener(self) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("0.0.0.0", 0))
+        port = listener.getsockname()[1]
+        listener.listen(1)
+        try:
+            self.assertFalse(server_checks.is_local_port_available(port))
+            occupant = server_checks.describe_listening_port(port)
+            self.assertIsNotNone(occupant)
+            self.assertIn(str(os.getpid()), occupant or "")
+        finally:
+            listener.close()
+        self.assertTrue(server_checks.is_local_port_available(port))
+
+    def test_remote_docker_image_uses_ssh_inspect(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="sha256:abc\n",
+            stderr="",
+        )
         with patch.object(
-            server_checks,
-            "create_docker_client",
-            return_value=client,
-        ) as create_client:
+            server_checks.subprocess, "run", return_value=completed
+        ) as run:
             result = server_checks.check_docker_image(
                 "example/image:tag",
                 "worker.example",
@@ -339,17 +546,52 @@ class ServerAuthorizationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["node"], "worker.example")
-        self.assertEqual(
-            create_client.call_args.args[0].hostname,
-            "worker.example",
+        self.assertIn("docker", run.call_args.args[0])
+        self.assertIn("image", run.call_args.args[0])
+        self.assertIn("inspect", run.call_args.args[0])
+        self.assertIn("worker.example", run.call_args.args[0])
+
+    def test_remote_docker_ssh_failure_is_not_reported_as_missing_image(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=255,
+            stdout="",
+            stderr="Permission denied (publickey,password).\n",
         )
-        client.images.get.assert_called_once_with("example/image:tag")
-        client.close.assert_called_once()
+        with patch.object(server_checks.subprocess, "run", return_value=completed):
+            result = server_checks.check_docker_image(
+                "example/image:tag",
+                "worker.example",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("SSH to worker.example failed", result["message"])
+        self.assertNotIn("does not exist", result["message"])
+
+    def test_missing_ssh_key_falls_back_to_default_identity(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="sha256:abc\n",
+            stderr="",
+        )
+        with patch.object(
+            server_checks.subprocess, "run", return_value=completed
+        ) as run:
+            result = server_checks.check_docker_image(
+                "example/image:tag",
+                "worker.example",
+                ssh_key="/missing/id_ed25519",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("SSH key /missing/id_ed25519 is missing", result["message"])
+        self.assertNotIn("-i", run.call_args.args[0])
 
     def test_resource_checks_include_all_worker_docker_images(self) -> None:
         payload = example_payload()
 
-        def image_result(image: str, hostname: str | None = None) -> dict:
+        def image_result(image: str, hostname: str | None = None, **kwargs) -> dict:
             node = hostname or "local"
             return {
                 "name": f"Docker image ({node})",
@@ -374,6 +616,54 @@ class ServerAuthorizationTests(unittest.TestCase):
         self.assertEqual(
             image_nodes,
             {"local", *payload["distributed_cfg"]["worker_nodes"]},
+        )
+
+    def test_local_docker_check_does_not_wait_on_workers(self) -> None:
+        payload = example_payload()
+        with patch.object(
+            server_checks,
+            "check_docker_image",
+            return_value={
+                "name": "Docker image (local)",
+                "ok": True,
+                "message": "Docker image exists on local",
+                "image": "example:tag",
+                "node": "local",
+            },
+        ) as check_image:
+            result = server_checks.check_config_docker_resources(payload)
+
+        self.assertEqual(len(result["checks"]), 1)
+        self.assertEqual(result["checks"][0]["node"], "local")
+        for call in check_image.call_args_list:
+            self.assertTrue(len(call.args) < 2 or call.args[1] is None)
+            self.assertIsNone(call.kwargs.get("hostname"))
+
+    def test_worker_docker_timeout_does_not_block_validation(self) -> None:
+        payload = example_payload()
+
+        def hang(image: str, hostname: str | None = None, **kwargs):
+            time.sleep(5)
+            return {
+                "name": f"Docker image ({hostname})",
+                "ok": True,
+                "message": "late",
+                "image": image,
+                "node": hostname,
+            }
+
+        with (
+            patch.object(server_checks, "DOCKER_IMAGE_CHECK_TIMEOUT_SEC", 0.2),
+            patch.object(server_checks, "check_docker_image", side_effect=hang),
+        ):
+            started = time.monotonic()
+            result = server_checks.check_config_worker_docker_resources(payload)
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.5)
+        self.assertFalse(result["valid"])
+        self.assertTrue(
+            all("timed out" in check["message"] for check in result["checks"])
         )
 
     def test_machine_checks_include_all_enabled_workers(self) -> None:
@@ -440,6 +730,37 @@ class ServerAuthorizationTests(unittest.TestCase):
 
             self.assertTrue(result["stop_requested"])
             self.assertIn("as soon as it starts", result["message"])
+
+    def test_second_stop_does_not_signal_again(self) -> None:
+        process = Mock()
+        process.pid = 4321
+        process.poll.return_value = None
+        with (
+            patch.dict(
+                server_settings.RUN_STATE,
+                {
+                    "process": process,
+                    "pid": process.pid,
+                    "running": True,
+                    "run_dir": None,
+                    "output": "",
+                    "stop_requested": False,
+                },
+            ),
+            patch.object(server_state, "terminate_run_process") as terminate,
+            patch.object(server_state, "force_kill_process_group_later") as force_kill,
+            patch.object(server_state, "terminate_recorded_visualization_pids"),
+        ):
+            first = server_state.stop_vap_run()
+            second = server_state.stop_vap_run()
+
+        terminate.assert_called_once_with(process)
+        force_kill.assert_called_once_with(
+            process, timeout_sec=server_state.STOP_CLEANUP_GRACE_SEC
+        )
+        self.assertIn("Stop signal sent", first["message"])
+        self.assertIn("already in progress", second["message"])
+        self.assertTrue(second["stop_requested"])
 
     def test_agent_cannot_start_with_modified_torch_profiler_dir(self) -> None:
         payload = example_payload()
@@ -545,6 +866,30 @@ class FileBoundaryTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertEqual(result["start_offset"], 6)
 
+    def test_log_file_handler_applies_status_byte_limit(self) -> None:
+        handler = server_handler.VAPConfigHandler.__new__(
+            server_handler.VAPConfigHandler
+        )
+        handler.send_json = Mock()
+        payload = {
+            "exists": True,
+            "content": "tail",
+            "truncated": True,
+        }
+
+        with patch.object(
+            server_handler,
+            "read_current_log_file",
+            return_value=payload,
+        ) as mock_read:
+            handler.handle_get_log_file("name=vllm_deploy.log")
+
+        mock_read.assert_called_once_with(
+            "vllm_deploy.log",
+            max_bytes=server_settings.MAX_STATUS_LOG_BYTES,
+        )
+        handler.send_json.assert_called_once_with(payload)
+
     def test_agent_prefers_aligned_merged_trace_over_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "logs"
@@ -594,6 +939,34 @@ class FileBoundaryTests(unittest.TestCase):
                 self.assertIn("vllm-profile/trace.json", names)
                 self.assertIn("clock-probe/clock-session.json", names)
                 self.assertNotIn("vllm-profile/secret-link", names)
+
+    def test_profile_archive_excludes_decompressed_alignment_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp) / "logs"
+            run_dir = logs_dir / "run"
+            profile_dir = run_dir / "vllm-profile"
+            raw_dir = profile_dir / "aligned" / "raw"
+            raw_dir.mkdir(parents=True)
+            (profile_dir / "rank0.pt.trace.json.gz").write_bytes(b"compressed")
+            (raw_dir / "rank-0.trace.json").write_bytes(b"decompressed")
+            (profile_dir / "aligned" / "manifest.json").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+
+            with patch.object(server_settings, "LOGS_DIR", logs_dir):
+                _, content = server_artifacts.build_current_profile_archive(
+                    str(run_dir)
+                )
+
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                names = archive.namelist()
+                self.assertIn("vllm-profile/rank0.pt.trace.json.gz", names)
+                self.assertIn("vllm-profile/aligned/manifest.json", names)
+                self.assertNotIn(
+                    "vllm-profile/aligned/raw/rank-0.trace.json",
+                    names,
+                )
 
     def test_temp_config_is_private(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -659,6 +1032,52 @@ class RuntimeAndCliTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
         pipeline_class.return_value.cleanup.assert_called_once()
+
+    def test_pipeline_cleanup_is_idempotent(self) -> None:
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.active = False
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.active = False
+        pipeline.profiler = Mock()
+        pipeline.profiler.active = False
+        pipeline._vllm_process = None
+        pipeline.ray_cluster = Mock()
+        pipeline.ray_cluster.processes = []
+        pipeline.worker_runners = [Mock()]
+        pipeline.master_runner = Mock()
+
+        pipeline.cleanup()
+        pipeline.cleanup()
+
+        pipeline.ptp4l.cleanup.assert_called_once()
+        pipeline.master_runner.cleanup.assert_called_once()
+        pipeline.worker_runners[0].cleanup.assert_called_once()
+
+    def test_pipeline_cleanup_stops_containers_if_services_fail(self) -> None:
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.active = True
+        pipeline.clock_probe.cleanup.side_effect = RuntimeError("probe failed")
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.active = True
+        pipeline.profiler = Mock()
+        pipeline.profiler.active = False
+        pipeline._vllm_process = None
+        pipeline.ray_cluster = Mock()
+        pipeline.ray_cluster.processes = []
+        pipeline.worker_runners = []
+        pipeline.master_runner = Mock()
+
+        with self.assertLogs("VAP", level="ERROR"):
+            pipeline.cleanup()
+
+        pipeline.ptp4l.cleanup.assert_called_once()
+        pipeline.master_runner.cleanup.assert_called_once()
 
     def test_clock_coordinator_is_killed_when_stop_fails(self) -> None:
         ray_module = Mock()
@@ -768,9 +1187,15 @@ class RuntimeAndCliTests(unittest.TestCase):
         pipeline.master_runner.process.run_shell.side_effect = RuntimeError(
             "benchmark crashed"
         )
+        pipeline.profiler = profiler_service.ProfilerLifecycle(
+            parsed, pipeline.master_runner
+        )
+        pipeline.benchmark = benchmark_service.BenchmarkLifecycle(
+            parsed, pipeline.master_runner
+        )
 
         with self.assertRaisesRegex(RuntimeError, "benchmark crashed"):
-            pipeline._bench_and_profile()
+            pipeline._run_workload()
 
         self.assertEqual(
             pipeline.master_runner.network.http_status.call_count,
@@ -790,9 +1215,43 @@ class RuntimeAndCliTests(unittest.TestCase):
         pipeline.master_runner = Mock()
         pipeline.master_runner.network.http_status.side_effect = [200, 500]
         pipeline.master_runner.process.run_shell.return_value = CommandResult(0)
+        pipeline.profiler = profiler_service.ProfilerLifecycle(
+            parsed, pipeline.master_runner
+        )
+        pipeline.benchmark = benchmark_service.BenchmarkLifecycle(
+            parsed, pipeline.master_runner
+        )
 
         with self.assertRaisesRegex(RuntimeError, "Failed to stop"):
-            pipeline._bench_and_profile()
+            pipeline._run_workload()
+
+    def test_disabled_profiler_runs_benchmark_only(self) -> None:
+        payload = example_payload()
+        payload["profiler_cfg"]["enable"] = False
+        parsed = config.VAPConfig.model_validate(payload)
+        tokens = parsed.vllm_deploy_args()
+        self.assertFalse(
+            any(token.startswith("--profiler-config.") for token in tokens)
+        )
+
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.config = parsed
+        pipeline.master_runner = Mock()
+        pipeline.master_runner.process.run_shell.return_value = CommandResult(0)
+        pipeline.profiler = profiler_service.ProfilerLifecycle(
+            parsed, pipeline.master_runner
+        )
+        pipeline.benchmark = benchmark_service.BenchmarkLifecycle(
+            parsed, pipeline.master_runner
+        )
+
+        pipeline._run_workload()
+
+        pipeline.master_runner.network.http_status.assert_not_called()
+        pipeline.master_runner.process.run_shell.assert_called_once()
+        self.assertFalse(pipeline.profiler.active)
 
     def test_clock_stop_does_not_mask_profiling_failure(self) -> None:
         payload = example_payload()
@@ -807,11 +1266,13 @@ class RuntimeAndCliTests(unittest.TestCase):
         pipeline.ray_cluster = Mock()
         pipeline.clock_probe = Mock()
         pipeline.clock_probe.enabled = True
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.enabled = False
         pipeline.trace_postprocessor = Mock()
         pipeline._check_model_weights = Mock()
         pipeline._deploy_model = Mock()
         pipeline._wait_for_vllm_ready = Mock()
-        pipeline._bench_and_profile = Mock(side_effect=RuntimeError("benchmark failed"))
+        pipeline._run_workload = Mock(side_effect=RuntimeError("benchmark failed"))
         pipeline.clock_probe.stop.side_effect = RuntimeError("clock stop failed")
         pipeline.cleanup = Mock()
 
@@ -826,10 +1287,150 @@ class RuntimeAndCliTests(unittest.TestCase):
 
         pipeline.clock_probe.start.assert_called_once()
         pipeline.clock_probe.stop.assert_called_once()
+        pipeline.ptp4l.stop.assert_called_once()
+
+    def test_ptp4l_starts_before_clock_probe(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "hardware"
+        parsed = config.VAPConfig.model_validate(payload)
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.config = parsed
+        pipeline.master_runner = Mock()
+        pipeline.worker_runners = [Mock()]
+        pipeline.ray_cluster = Mock()
+        pipeline.ray_cluster.runner_node_ids = {
+            "local": "192.168.0.9",
+            "cse-ai-6.amd.com": "192.168.0.6",
+        }
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.enabled = True
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.enabled = True
+        pipeline.ptp4l.container_log_paths = {
+            "cse-ai-9": "/app/VAP/log/clock-probe/ptp4l/run/cse-ai-9.log"
+        }
+        pipeline.ptp4l.node_descriptors = {
+            "192.168.0.9": {
+                "interface": "eth0",
+                "phc_device": "/dev/ptp0",
+                "ptp_log": "/app/VAP/log/clock-probe/ptp4l/run/cse-ai-9.log",
+            }
+        }
+        pipeline.profiler = Mock()
+        pipeline.profiler.enabled = False
+        pipeline.trace_postprocessor = Mock()
+        pipeline._check_model_weights = Mock()
+        pipeline._deploy_model = Mock()
+        pipeline._wait_for_vllm_ready = Mock()
+        pipeline._run_workload = Mock()
+        pipeline.cleanup = Mock()
+        order: list[str] = []
+        pipeline.ptp4l.start.side_effect = lambda *args, **kwargs: order.append(
+            "ptp4l.start"
+        )
+        pipeline.clock_probe.start.side_effect = lambda: order.append(
+            "clock_probe.start"
+        )
+        pipeline._run_workload.side_effect = lambda: order.append("workload")
+        pipeline.clock_probe.stop.side_effect = lambda: order.append("clock_probe.stop")
+        pipeline.ptp4l.stop.side_effect = lambda: order.append("ptp4l.stop")
+
+        with (
+            patch.object(torch_pipeline, "check_port_availability"),
+            patch.object(torch_pipeline.os.path, "exists", return_value=True),
+            patch.object(pipeline, "_container_spec", return_value=Mock()),
+            patch.object(torch_pipeline, "start_tensorboard", return_value=Mock()),
+            patch.object(torch_pipeline, "start_perfetto", return_value=Mock()),
+            patch.object(torch_pipeline, "write_visualization_pids"),
+            patch.object(torch_pipeline, "wait_for_visualizations"),
+            patch.object(torch_pipeline, "stop_visualizations"),
+        ):
+            pipeline.run_pipeline()
+
+        self.assertEqual(
+            order,
+            [
+                "ptp4l.start",
+                "clock_probe.start",
+                "workload",
+                "clock_probe.stop",
+                "ptp4l.stop",
+            ],
+        )
+        pipeline.clock_probe.set_ptp_logs.assert_called_once_with(
+            pipeline.ptp4l.container_log_paths
+        )
+        pipeline.clock_probe.set_ptp_nodes.assert_called_once_with(
+            pipeline.ptp4l.node_descriptors
+        )
+        pipeline.ptp4l.start.assert_called_once_with(
+            node_addresses=pipeline.ray_cluster.runner_node_ids
+        )
+        pipeline.master_runner.network.ensure_inventory.assert_called()
+        pipeline.worker_runners[0].network.ensure_inventory.assert_called()
+
+    def test_ptp4l_failure_does_not_abort_workload_when_not_required(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "hardware"
+        payload["clock_probe_cfg"]["required"] = False
+        parsed = config.VAPConfig.model_validate(payload)
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.config = parsed
+        pipeline.master_runner = Mock()
+        pipeline.worker_runners = [Mock()]
+        pipeline.ray_cluster = Mock()
+        pipeline.ray_cluster.runner_node_ids = {
+            "local": "192.168.0.9",
+            "worker.example": "192.168.0.10",
+        }
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.enabled = True
+        pipeline.clock_probe.required = False
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.enabled = True
+        pipeline.ptp4l.start.side_effect = RuntimeError(
+            "ptp4l on local did not reach MASTER or GRAND_MASTER"
+        )
+        pipeline.profiler = Mock()
+        pipeline.profiler.enabled = False
+        pipeline.trace_postprocessor = Mock()
+        pipeline._check_model_weights = Mock()
+        pipeline._deploy_model = Mock()
+        pipeline._wait_for_vllm_ready = Mock()
+        pipeline._run_workload = Mock()
+        pipeline.cleanup = Mock()
+
+        with (
+            patch.object(torch_pipeline, "check_port_availability"),
+            patch.object(torch_pipeline.os.path, "exists", return_value=True),
+            patch.object(pipeline, "_container_spec", return_value=Mock()),
+            patch.object(torch_pipeline, "start_tensorboard", return_value=Mock()),
+            patch.object(torch_pipeline, "start_perfetto", return_value=Mock()),
+            patch.object(torch_pipeline, "write_visualization_pids"),
+            patch.object(torch_pipeline, "wait_for_visualizations"),
+            patch.object(torch_pipeline, "stop_visualizations"),
+            self.assertLogs("VAP", level="WARNING"),
+        ):
+            pipeline.run_pipeline()
+
+        pipeline.ptp4l.start.assert_called_once_with(
+            node_addresses=pipeline.ray_cluster.runner_node_ids
+        )
+        pipeline.clock_probe.set_ptp_logs.assert_not_called()
+        pipeline.clock_probe.start.assert_not_called()
+        pipeline._run_workload.assert_called_once()
+        pipeline.ptp4l.stop.assert_called_once()
 
     def test_clock_probe_start_and_stop_produce_session(self) -> None:
         payload = example_payload()
         payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "software"
         payload["vllm_deploy_cfg"]["-tp"] = 1
         payload["vllm_deploy_cfg"]["-pp"] = 2
         parsed = config.VAPConfig.model_validate(payload)
@@ -889,6 +1490,93 @@ class RuntimeAndCliTests(unittest.TestCase):
         self.assertTrue(
             any("Clock probe fitting summary" in line for line in logs.output)
         )
+
+    def test_clock_probe_fail_session_logs_reasons_as_warning(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "hardware"
+        parsed = config.VAPConfig.model_validate(payload)
+        master_runner = Mock()
+        master_runner.process.run.return_value = CommandResult(
+            0, stdout=b'{"status": "FAIL"}'
+        )
+        master_runner.files.is_file.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            clock_probe = clock_probe_service.ClockProbeLifecycle(
+                parsed,
+                master_runner,
+                tmp,
+                "20260830_123214",
+            )
+            clock_probe._active = True
+            session_path = Path(tmp) / "clock-probe" / "clock-session.json"
+            session_path.parent.mkdir()
+            session_path.write_text(
+                json.dumps(
+                    {
+                        "clock_source": "ptp_hardware",
+                        "status": "FAIL",
+                        "models": [],
+                        "failures": [
+                            {
+                                "hostname": "cse-ai-6",
+                                "reasons": [
+                                    "ptp4l rms p95 4284.4 ns exceeds 1000.0 ns"
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertLogs("VAP", level="WARNING") as logs:
+                clock_probe.stop()
+
+        output = "\n".join(logs.output)
+        self.assertIn("Clock probe calibration FAILED", output)
+        self.assertIn("cse-ai-6", output)
+        self.assertIn("4284.4 ns exceeds 1000.0 ns", output)
+
+    def test_required_clock_probe_fail_session_raises(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "hardware"
+        payload["clock_probe_cfg"]["required"] = True
+        parsed = config.VAPConfig.model_validate(payload)
+        master_runner = Mock()
+        master_runner.process.run.return_value = CommandResult(
+            0, stdout=b'{"status": "FAIL"}'
+        )
+        master_runner.files.is_file.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            clock_probe = clock_probe_service.ClockProbeLifecycle(
+                parsed,
+                master_runner,
+                tmp,
+                "20260830_123214",
+            )
+            clock_probe._active = True
+            session_path = Path(tmp) / "clock-probe" / "clock-session.json"
+            session_path.parent.mkdir()
+            session_path.write_text(
+                json.dumps(
+                    {
+                        "clock_source": "ptp_hardware",
+                        "status": "FAIL",
+                        "models": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                self.assertLogs("VAP", level="WARNING"),
+                self.assertRaisesRegex(RuntimeError, "Required Clock Probe"),
+            ):
+                clock_probe.stop()
 
     def test_clock_probe_is_disabled_for_single_node_runs(self) -> None:
         payload = example_payload()
@@ -968,6 +1656,44 @@ class RuntimeAndCliTests(unittest.TestCase):
             2,
         )
 
+    def test_non_rank_trace_does_not_block_rank_trace_finalization(self) -> None:
+        payload = example_payload()
+        payload["vllm_deploy_cfg"]["-tp"] = 1
+        payload["vllm_deploy_cfg"]["-pp"] = 2
+        parsed = config.VAPConfig.model_validate(payload)
+        master_runner = Mock()
+        master_runner.target.label = "local"
+        master_runner.files.directory_snapshot.side_effect = [
+            {
+                "rank0.pt.trace.json": (100, 1),
+                "node.async_llm.1.pt.trace.json": (0, 1),
+            },
+            {
+                "rank0.pt.trace.json": (100, 1),
+                "node.async_llm.1.pt.trace.json": (50, 2),
+            },
+        ]
+        worker = Mock()
+        worker.target.label = "worker.example"
+        worker.files.directory_snapshot.side_effect = [
+            {"rank1.pt.trace.json": (200, 1)},
+            {"rank1.pt.trace.json": (200, 1)},
+        ]
+        postprocessor = trace_service.TracePostprocessor(
+            parsed,
+            "/tmp/vap-test",
+            master_runner,
+            [worker],
+        )
+
+        postprocessor.wait_for_trace_files(
+            timeout_sec=1,
+            poll_interval_sec=0,
+            stable_checks=1,
+        )
+
+        self.assertEqual(master_runner.files.directory_snapshot.call_count, 2)
+
     def test_ray_cluster_starts_head_and_workers(self) -> None:
         parsed = config.VAPConfig.model_validate(example_payload())
         master_runner = Mock()
@@ -1001,6 +1727,34 @@ class RuntimeAndCliTests(unittest.TestCase):
         master_runner.process.start.assert_called_once()
         for worker in workers:
             worker.process.start.assert_called_once()
+
+    def test_ray_cluster_cleanup_terminates_foreground_processes(self) -> None:
+        parsed = config.VAPConfig.model_validate(example_payload())
+        master_runner = Mock()
+        master_runner.is_started = True
+        master_runner.target.label = "local"
+        worker = Mock()
+        worker.is_started = True
+        worker.target.label = "worker.example"
+        ray_cluster = ray_cluster_service.RayClusterLifecycle(
+            parsed,
+            master_runner,
+            [worker],
+        )
+        head = Mock()
+        worker_proc = Mock()
+        ray_cluster._processes = [
+            (master_runner, head),
+            (worker, worker_proc),
+        ]
+
+        ray_cluster.cleanup()
+
+        worker.process.run.assert_not_called()
+        master_runner.process.run.assert_not_called()
+        worker.process.terminate.assert_called_once_with(worker_proc, timeout_sec=5)
+        master_runner.process.terminate.assert_called_once_with(head, timeout_sec=5)
+        self.assertEqual(ray_cluster.processes, ())
 
     def test_worker_traces_are_collected_by_node(self) -> None:
         parsed = config.VAPConfig.model_validate(example_payload())
@@ -1065,10 +1819,12 @@ class RuntimeAndCliTests(unittest.TestCase):
             profile_dir = Path(tmp) / "vllm-profile"
             profile_dir.mkdir()
             master_trace = profile_dir / "dp0_rank0.1.pt.trace.json"
+            async_llm_trace = profile_dir / "cse-ai-9_13880.async_llm.1.pt.trace.json"
             worker_trace = (
                 profile_dir / "workers" / "worker" / "dp0_rank1.1.pt.trace.json"
             )
             master_trace.write_text("{}", encoding="utf-8")
+            async_llm_trace.write_text("{}", encoding="utf-8")
             worker_trace.parent.mkdir(parents=True)
             worker_trace.write_text("{}", encoding="utf-8")
             worker_trace_files = {
@@ -1091,6 +1847,7 @@ class RuntimeAndCliTests(unittest.TestCase):
                     "fuse_traces",
                     return_value=str(profile_dir / "aligned-merged.json.gz"),
                 ) as fuse,
+                self.assertLogs("VAP", level="INFO") as logs,
             ):
                 trace_inputs = postprocessor.distributed_trace_inputs(
                     str(profile_dir),
@@ -1112,6 +1869,12 @@ class RuntimeAndCliTests(unittest.TestCase):
         alignment_inputs = align.call_args.args[0]
         self.assertEqual(alignment_inputs[0].source_node, "192.168.0.9")
         self.assertEqual(alignment_inputs[1].source_node, "192.168.0.10")
+        self.assertTrue(
+            any(
+                "Skipping non-rank profiler trace" in line and "async_llm" in line
+                for line in logs.output
+            )
+        )
         self.assertTrue(align.call_args.kwargs["apply_clc_on_warning"])
         self.assertEqual(fuse.call_args.args[0], manifest.aligned)
 
@@ -1152,6 +1915,30 @@ class RuntimeAndCliTests(unittest.TestCase):
         self.assertFalse(fuse.call_args.kwargs["aligned"])
         align.assert_not_called()
 
+    def test_single_node_postprocessing_skips_non_rank_trace(self) -> None:
+        payload = example_payload()
+        payload["distributed_cfg"]["enable"] = False
+        payload["vllm_deploy_cfg"]["-tp"] = 1
+        payload["vllm_deploy_cfg"]["-pp"] = 1
+        parsed = config.VAPConfig.model_validate(payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            postprocessor = trace_service.TracePostprocessor(
+                parsed,
+                tmp,
+                Mock(),
+                [],
+            )
+            profile_dir = Path(tmp)
+            rank_trace = profile_dir / "dp0_rank0.1.pt.trace.json"
+            auxiliary = profile_dir / "node.async_llm.1.pt.trace.json"
+            rank_trace.write_text("{}", encoding="utf-8")
+            auxiliary.write_text("{}", encoding="utf-8")
+
+            result = postprocessor.prepare_single_node_trace(str(profile_dir))
+
+        self.assertEqual(result, str(rank_trace))
+
     def test_pipeline_orchestrates_master_runner_and_cleans_up(self) -> None:
         payload = example_payload()
         payload["distributed_cfg"]["enable"] = False
@@ -1176,6 +1963,12 @@ class RuntimeAndCliTests(unittest.TestCase):
         pipeline.clock_probe.local_session_path = Path(
             "/tmp/vap-test/clock-probe/clock-session.json"
         )
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.enabled = False
+        pipeline.ptp4l.active = False
+        pipeline.profiler = Mock()
+        pipeline.profiler.enabled = True
+        pipeline.profiler.active = False
         pipeline.trace_postprocessor = Mock()
         pipeline.trace_postprocessor.profile_dir = "/tmp/vap-test/vllm-profile"
         pipeline.trace_postprocessor.prepare_single_node_trace.return_value = (
@@ -1184,7 +1977,7 @@ class RuntimeAndCliTests(unittest.TestCase):
         pipeline._deploy_model = Mock()
         pipeline._wait_for_vllm_ready = Mock()
         pipeline._check_model_weights = Mock()
-        pipeline._bench_and_profile = Mock()
+        pipeline._run_workload = Mock()
         tensorboard_process = Mock()
         perfetto_process = Mock()
 
@@ -1215,7 +2008,7 @@ class RuntimeAndCliTests(unittest.TestCase):
         pipeline._wait_for_vllm_ready.assert_called_once()
         pipeline.clock_probe.start.assert_not_called()
         pipeline.clock_probe.stop.assert_not_called()
-        pipeline._bench_and_profile.assert_called_once()
+        pipeline._run_workload.assert_called_once()
         pipeline.trace_postprocessor.wait_for_trace_files.assert_called_once()
         pipeline.trace_postprocessor.collect_worker_traces.assert_not_called()
         pipeline.trace_postprocessor.prepare_single_node_trace.assert_called_once()
@@ -1225,6 +2018,53 @@ class RuntimeAndCliTests(unittest.TestCase):
         wait.assert_called_once()
         stop.assert_called_once()
         self.assertEqual(write_pids.call_count, 2)
+
+    def test_disabled_profiler_skips_trace_postprocessing(self) -> None:
+        payload = example_payload()
+        payload["distributed_cfg"]["enable"] = False
+        payload["profiler_cfg"]["enable"] = False
+        parsed = config.VAPConfig.model_validate(payload)
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.config = parsed
+        pipeline.log_path = "/tmp/vap-test"
+        pipeline.date_str = "20260820_140000"
+        pipeline.visualization_host = "127.0.0.1"
+        pipeline.master_runner = Mock()
+        pipeline.worker_runners = []
+        pipeline._vllm_process = None
+        pipeline.ray_cluster = Mock()
+        pipeline.ray_cluster.processes = []
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.enabled = False
+        pipeline.clock_probe.active = False
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.enabled = False
+        pipeline.ptp4l.active = False
+        pipeline.profiler = Mock()
+        pipeline.profiler.enabled = False
+        pipeline.profiler.active = False
+        pipeline.trace_postprocessor = Mock()
+        pipeline._deploy_model = Mock()
+        pipeline._wait_for_vllm_ready = Mock()
+        pipeline._check_model_weights = Mock()
+        pipeline._run_workload = Mock()
+
+        with (
+            patch.object(torch_pipeline, "check_port_availability"),
+            patch.object(torch_pipeline.os.path, "exists", return_value=True),
+            patch.object(torch_pipeline, "start_tensorboard") as start_tb,
+            patch.object(torch_pipeline, "start_perfetto") as start_perfetto,
+            patch.object(pipeline, "_container_spec", return_value=Mock()),
+            self.assertLogs("VAP", level="INFO"),
+        ):
+            pipeline.run_pipeline()
+
+        pipeline._run_workload.assert_called_once()
+        pipeline.trace_postprocessor.wait_for_trace_files.assert_not_called()
+        start_tb.assert_not_called()
+        start_perfetto.assert_not_called()
 
     def test_cli_run_supplies_visualization_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1370,18 +2210,38 @@ class FrontendFallbackTests(unittest.TestCase):
 
         self.assertIn('id="dist-enable"', html)
         self.assertIn('id="dist-ray-port"', html)
+        self.assertIn('id="dist-sshkey"', html)
+        self.assertIn("sshkey_path:", html)
         self.assertIn('id="worker-nodes-list"', html)
         self.assertIn('id="add-worker"', html)
         self.assertIn("enable: distributedEnabled", html)
         self.assertIn('id="distributed-panel"', html)
         self.assertIn('id="distributed-settings"', html)
         self.assertIn('classList.toggle("distributed-disabled", !enabled)', html)
+        self.assertIn('id="profiler-panel"', html)
+        self.assertIn('id="profiler-enable"', html)
+        self.assertIn("Enable Torch Profiler", html)
         self.assertIn('id="clock-probe-panel"', html)
+        self.assertIn("Clock Probe Hardware Capability", html)
+        self.assertIn("ptp4l sidecar", html)
+        self.assertNotIn('id="clock-probe-ptp-logs"', html)
+        self.assertNotIn('id="add-clock-probe-ptp-log"', html)
+        self.assertIn('fetch("/api/check-clock-probe"', html)
+        self.assertIn("checkResourceScopeOnServer", html)
+        self.assertIn("/api/check-${scope}-resources", html)
+        self.assertIn('checkResourceScopeOnServer(config, "model")', html)
+        self.assertIn('checkResourceScopeOnServer(config, "docker")', html)
+        self.assertIn('checkResourceScopeOnServer(config, "worker-docker")', html)
+        self.assertIn("Worker Docker Images Exist", html)
+        self.assertIn('checkResourceScopeOnServer(config, "container")', html)
         self.assertIn('id="clock-probe-clc"', html)
         self.assertIn("apply_clc_on_warning:", html)
         self.assertIn("Download Profile Archive", html)
         self.assertIn("fetch(`/api/log-file/download?name=", html)
         self.assertIn('data.stop_requested ? "Stopping" : "Running"', html)
+        self.assertIn("let stopInFlight = false", html)
+        self.assertIn("if (stopInFlight) return", html)
+        self.assertIn("btnStop.disabled = !isRunning || isStopping", html)
         self.assertNotIn(
             'data.message?.content || "", { local: true });\n        await syncAfterAgentAction',
             html,
@@ -1402,6 +2262,18 @@ class FrontendFallbackTests(unittest.TestCase):
         self.assertIn("async function downloadCurrentTrace()", html)
         self.assertIn("if (perfettoPortUnavailable)", html)
         self.assertIn("port.blocking === false", html)
+
+    def test_log_switching_uses_bounded_status_payloads(self) -> None:
+        html = (PROJECT_ROOT / "public" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("function applyStatusLogs(", html)
+        self.assertIn("function formatLogInfo(", html)
+        self.assertIn('formatLogInfo(logs["vllm_deploy.log"])', html)
+        self.assertIn('formatLogInfo(logs["vllm_bench.log"])', html)
+        self.assertIn('if (name === "deploy" && !deployLogOutput.textContent)', html)
+        self.assertIn('if (name === "bench" && !benchLogOutput.textContent)', html)
+        self.assertNotIn("function refreshFileLogs(", html)
+        self.assertIn("contain: content", html)
 
 
 class TraceSkillSchemaTests(unittest.TestCase):

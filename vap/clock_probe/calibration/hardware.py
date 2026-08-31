@@ -134,6 +134,10 @@ def build_hardware_model(  # pylint: disable=too-many-arguments
         path_delay_asymmetry=selected.path_delay_asymmetry,
     )
     remaining_budget_us = selected.max_total_uncertainty_us - ptp_us
+    bridge_budget_us = remaining_budget_us if remaining_budget_us > 0 else None
+    # Same as clock_probe: always fit the REALTIME-PHC bridge. An empty
+    # bridge on PTP-budget FAIL makes session merge raise
+    # "Hardware model has no PHC bridge segments" instead of writing FAIL.
     bridge = build_phc_bridge(
         samples,
         boot_id=str(identity["boot_id"]),
@@ -142,7 +146,7 @@ def build_hardware_model(  # pylint: disable=too-many-arguments
         candidate_segment_seconds=selected.candidate_segment_seconds,
         candidate_sample_strides=selected.candidate_sample_strides,
         tuning_fraction=selected.tuning_fraction,
-        max_uncertainty_us=remaining_budget_us,
+        max_uncertainty_us=bridge_budget_us,
     )
     bridge_us = float(bridge.get("uncertainty_us", 0.0))
     if not bridge_us and bridge.get("segments"):
@@ -201,8 +205,17 @@ def _model_phc_start_ns(model: dict[str, Any]) -> int:
 
 
 def _trace_base_from_phc(models: Sequence[dict[str, Any]]) -> int:
-    first_phc_ns = min(_model_phc_start_ns(model) for model in models)
-    return first_phc_ns // HOUR_NS * HOUR_NS
+    starts: list[int] = []
+    missing: list[str] = []
+    for model in models:
+        try:
+            starts.append(_model_phc_start_ns(model))
+        except ValueError:
+            missing.append(str(model.get("source", {}).get("hostname") or "?"))
+    if not starts:
+        detail = f" ({', '.join(missing)})" if missing else ""
+        raise ValueError(f"Hardware model has no PHC bridge segments{detail}")
+    return min(starts) // HOUR_NS * HOUR_NS
 
 
 def build_hardware_session(
@@ -214,16 +227,26 @@ def build_hardware_session(
     """Merge per-node PHC models. All nodes must share one grandmaster."""
     if len(models) < 2:
         raise ValueError("A hardware session needs at least two node models")
-    gm_ids = {model.get("ptp", {}).get("grandmaster_clock_id") for model in models}
-    gm_ids.discard(None)
-    if len(gm_ids) != 1:
+    masters = [
+        model for model in models if model.get("ptp", {}).get("role") == "master"
+    ]
+    slaves = [model for model in models if model.get("ptp", {}).get("role") == "slave"]
+    if len(masters) != 1 or not slaves:
         raise ValueError(
-            f"Hardware models do not share one grandmaster clock id: {sorted(gm_ids)}"
+            "Hardware session needs exactly one master model and at least one slave"
         )
-    roles = {model.get("ptp", {}).get("role") for model in models}
-    if "master" not in roles or "slave" not in roles:
+    master_id = masters[0].get("ptp", {}).get("grandmaster_clock_id")
+    if not master_id:
+        raise ValueError("Hardware master model has no local grandmaster clock id")
+    mismatched = [
+        str(model.get("source", {}).get("hostname") or "?")
+        for model in slaves
+        if model.get("ptp", {}).get("grandmaster_clock_id") != master_id
+    ]
+    if mismatched:
         raise ValueError(
-            "Hardware session needs one master model and at least one slave"
+            "Hardware slave models do not select the master clock "
+            f"{master_id}: {mismatched}"
         )
     failed = [
         model
@@ -252,7 +275,7 @@ def build_hardware_session(
         "target_base_time_ns": _trace_base_from_phc(models),
         "status": "PASS" if not failed else "FAIL",
         "ptp": {
-            "grandmaster_clock_id": next(iter(gm_ids)),
+            "grandmaster_clock_id": master_id,
             "path_delay_asymmetry": path_delay_asymmetry,
             "uncertainty_us": max(ptp_uncertainties, default=0.0),
             "notes": [

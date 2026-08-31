@@ -151,16 +151,18 @@ class RayClusterLifecycle:
         logger.info("Ray cluster is ready with %d nodes", expected_nodes)
 
     def cleanup(self) -> None:
+        """Stop the foreground Ray process; runner removal owns daemon cleanup."""
         for runner, process in reversed(self._processes):
-            if runner.is_started:
-                try:
-                    runner.process.terminate(process)
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to terminate Ray on %s: %s",
-                        runner.target.label,
-                        exc,
-                    )
+            if not runner.is_started:
+                continue
+            try:
+                runner.process.terminate(process, timeout_sec=5)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to terminate Ray on %s: %s",
+                    runner.target.label,
+                    exc,
+                )
         self._processes.clear()
 
     @staticmethod

@@ -193,6 +193,22 @@ class NetworkAssistant:
         if auto_refresh:
             self.refresh()
 
+    @property
+    def has_inventory(self) -> bool:
+        with self._lock:
+            return bool(self._interfaces)
+
+    def ensure_inventory(self) -> tuple[NetworkInterfaceInfo, ...]:
+        """Return the cached NIC snapshot, probing the container if it is empty."""
+        with self._lock:
+            if self._interfaces:
+                return self._snapshot()
+        logger.info(
+            "NetworkAssistant inventory is empty on %s; probing NICs now",
+            self._target_label,
+        )
+        return self.refresh()
+
     def refresh(self) -> tuple[NetworkInterfaceInfo, ...]:
         command = ["python3", "-c", _NETWORK_PROBE]
         result = self._executor.run(command)
@@ -255,6 +271,75 @@ class NetworkAssistant:
             for interface in self.interfaces()
             if interface.ptp_device is not None
         )
+
+    def select_ptp_interface(
+        self,
+        *,
+        preferred_interface: str | None = None,
+        preferred_phc_device: str | None = None,
+    ) -> NetworkInterfaceInfo:
+        """Pick an UP NIC that already has a PHC in the saved inventory."""
+        self.ensure_inventory()
+        candidates = [
+            interface for interface in self.ptp_interfaces() if interface.link_up
+        ]
+        if preferred_interface:
+            selected = next(
+                (
+                    interface
+                    for interface in candidates
+                    if interface.name == preferred_interface
+                ),
+                None,
+            )
+            if selected is None:
+                raise RuntimeError(
+                    f"{self._target_label}: interface {preferred_interface!r} "
+                    "is not UP with a PHC in the NetworkAssistant inventory"
+                )
+        elif preferred_phc_device:
+            selected = next(
+                (
+                    interface
+                    for interface in candidates
+                    if interface.ptp_device == preferred_phc_device
+                ),
+                None,
+            )
+            if selected is None:
+                raise RuntimeError(
+                    f"{self._target_label}: PHC {preferred_phc_device!r} "
+                    "is not on an UP NIC in the NetworkAssistant inventory"
+                )
+        else:
+            if not candidates:
+                raise RuntimeError(
+                    f"{self._target_label}: no UP NIC with a PHC in the "
+                    "NetworkAssistant inventory"
+                )
+            selected = sorted(
+                candidates,
+                key=lambda interface: (
+                    0 if interface.interface_type == "ethernet" else 1,
+                    0 if interface.ipv4 else 1,
+                    -(interface.speed_mbps if interface.speed_mbps is not None else -1),
+                    interface.index,
+                    interface.name,
+                ),
+            )[0]
+        if preferred_phc_device and selected.ptp_device != preferred_phc_device:
+            raise RuntimeError(
+                f"{self._target_label}: {selected.name} has {selected.ptp_device}, "
+                f"not {preferred_phc_device}"
+            )
+        logger.info(
+            "Selected PTP NIC %s (%s, %s Mb/s) on %s from NetworkAssistant inventory",
+            selected.name,
+            selected.ptp_device,
+            selected.speed_mbps,
+            self._target_label,
+        )
+        return selected
 
     def select_vllm_host_ip(self, peer: str) -> str:
         interfaces = self.refresh()

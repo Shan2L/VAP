@@ -1086,12 +1086,14 @@
     }
 
     #distributed-settings,
-    #clock-probe-settings {
+    #clock-probe-settings,
+    #profiler-settings {
       transition: opacity 0.2s ease;
     }
 
     section.distributed-disabled #distributed-settings,
-    section.distributed-disabled #clock-probe-settings {
+    section.distributed-disabled #clock-probe-settings,
+    section.distributed-disabled #profiler-settings {
       opacity: 0.5;
     }
 
@@ -1283,7 +1285,7 @@
       border-radius: 9px;
       background: var(--panel);
       overflow: hidden;
-      transition: border-color 0.26s ease, box-shadow 0.26s ease, transform 0.26s ease;
+      transition: border-color 0.26s ease, box-shadow 0.26s ease;
     }
 
     .log-item:hover {
@@ -1348,18 +1350,15 @@
     }
 
     .log-body {
-      max-height: 0;
+      display: none;
       height: calc(100vh - 244px);
+      min-height: 220px;
       border-top: 1px solid var(--line);
-      opacity: 0;
       overflow: hidden;
-      transition: max-height 0.3s ease, opacity 0.24s ease;
     }
 
     .log-item.active .log-body {
-      max-height: calc(100vh - 244px);
-      min-height: 220px;
-      opacity: 1;
+      display: block;
     }
 
     .status {
@@ -1393,6 +1392,7 @@
       white-space: pre-wrap;
       word-break: normal;
       overflow-wrap: normal;
+      contain: content;
     }
 
     :root[data-theme="light"] .log-output {
@@ -1746,6 +1746,7 @@
           <div id="distributed-settings">
           <div class="grid" style="margin-top:12px">
             <label>Ray Head Port<input id="dist-ray-port" type="number" min="1" max="65535" /></label>
+            <label>SSH Key Path (optional)<input id="dist-sshkey" placeholder="Default SSH identity" /></label>
           </div>
           <p class="hint" style="margin-top:18px">Worker Nodes</p>
           <div class="list-editor" id="worker-nodes-list"></div>
@@ -1757,7 +1758,7 @@
         <section class="config-panel distributed-disabled" id="clock-probe-panel">
         <h2>Clock Probe Config</h2>
         <div class="section-body">
-          <p class="hint">Clock probing is available only for distributed runs. CLC remains disabled unless explicitly enabled.</p>
+          <p class="hint">Clock probing is available only for distributed runs. Hardware mode uses the first configured Ray worker as PTP grandmaster and makes the Ray head and remaining workers slaves. Clock Probe is bound to the exact NIC/PHC selected for each ptp4l sidecar. If the image has no ptp4l binary, supported Debian/Ubuntu amd64 or arm64 images install linuxptp with apt. Do not run phc2sys.</p>
           <div class="grid">
             <label class="checkbox-field"><input id="clock-probe-enable" type="checkbox" />Enable clock probe</label>
           </div>
@@ -1765,9 +1766,9 @@
             <div class="grid" style="margin-top:12px">
               <label>Mode
                 <select id="clock-probe-mode">
+                  <option value="hardware">hardware</option>
                   <option value="software">software</option>
                   <option value="auto">auto</option>
-                  <option value="hardware">hardware</option>
                 </select>
               </label>
               <label>Probe Port<input id="clock-probe-port" type="number" min="1" max="65535" /></label>
@@ -1775,12 +1776,9 @@
               <label>Hardware Interval (ms)<input id="clock-probe-hw-interval" type="number" min="0.001" step="0.001" /></label>
               <label class="checkbox-field"><input id="clock-probe-required" type="checkbox" />Fail run when probing/alignment fails</label>
               <label class="checkbox-field"><input id="clock-probe-clc" type="checkbox" />Apply CLC when alignment validation warns</label>
-              <label>Hardware Interface<input id="clock-probe-interface" placeholder="enp196s0f1np1" /></label>
-              <label>PHC Device<input id="clock-probe-phc" placeholder="/dev/ptp3" /></label>
+              <label>Preferred Hardware Interface (optional)<input id="clock-probe-interface" placeholder="Auto-detect per node" /></label>
+              <label>Preferred PHC Device (optional)<input id="clock-probe-phc" placeholder="Auto-detect /dev/ptpN" /></label>
             </div>
-            <p class="hint" style="margin-top:18px">PTP Log Mapping (hostname → path)</p>
-            <div class="list-editor" id="clock-probe-ptp-logs"></div>
-            <button class="small add-row" type="button" id="add-clock-probe-ptp-log"><span class="button-icon" aria-hidden="true">＋</span>Add PTP Log</button>
           </div>
         </div>
         </section>
@@ -1811,12 +1809,18 @@
         </div>
         </section>
 
-        <section class="config-panel">
+        <section class="config-panel" id="profiler-panel">
         <h2>Profiler Config</h2>
         <div class="section-body">
-          <p class="hint">Use <code>true</code> / <code>false</code> for booleans. <code>torch_profiler_dir</code> is fixed by VAP and cannot be modified.</p>
+          <p class="hint">Profiling is optional and independent of benchmark. Disable it to run <code>vllm bench serve</code> without Torch Profiler, traces, TensorBoard, or Perfetto.</p>
+          <div class="grid">
+            <label class="checkbox-field"><input id="profiler-enable" type="checkbox" checked />Enable Torch Profiler</label>
+          </div>
+          <div id="profiler-settings">
+          <p class="hint" style="margin-top:12px">Use <code>true</code> / <code>false</code> for booleans. <code>torch_profiler_dir</code> is fixed by VAP and cannot be modified.</p>
           <div class="kv-list" id="profiler-kv"></div>
           <button class="small add-row" type="button" data-add-kv="profiler-kv"><span class="button-icon" aria-hidden="true">＋</span>Add Argument</button>
+          </div>
         </div>
         </section>
 
@@ -2920,7 +2924,7 @@
       if (!toolEvent || !["start_run", "stop_run"].includes(toolEvent.tool_name)) return;
       openLogPanel("run");
       if (toolEvent.tool_name === "start_run") {
-        updateLogContent(logOutput, "", { forceScroll: true });
+        clearLogPanels();
         setRunState("running", "Running");
         setTensorBoardReady(false);
         setProfileActionsReady(false);
@@ -2975,12 +2979,15 @@
       localStorage.removeItem(CONFIG_DRAFT_KEY);
     }
 
+    let stopInFlight = false;
+
     function setRunState(state, label) {
       runStatus.textContent = label;
       runStatus.className = "status" + (state ? " " + state : "");
       const isRunning = state === "running";
+      const isStopping = isRunning && (label === "Stopping" || stopInFlight);
       btnRun.disabled = isRunning;
-      btnStop.disabled = !isRunning;
+      btnStop.disabled = !isRunning || isStopping;
       document.getElementById("btn-validate").disabled = isRunning;
       document.getElementById("btn-reload").disabled = isRunning;
       document.getElementById("btn-save").disabled = isRunning;
@@ -3022,9 +3029,9 @@
       document.querySelectorAll("[data-log-panel]").forEach((panel) => {
         panel.classList.toggle("active", panel.dataset.logPanel === name);
       });
-      if (name === "deploy") {
+      if (name === "deploy" && !deployLogOutput.textContent) {
         loadLogFile("vllm_deploy.log", deployLogOutput);
-      } else if (name === "bench") {
+      } else if (name === "bench" && !benchLogOutput.textContent) {
         loadLogFile("vllm_bench.log", benchLogOutput);
       }
     }
@@ -3035,6 +3042,31 @@
       });
     }
 
+    function formatLogInfo(logInfo, fallback = "") {
+      if (!logInfo) return fallback;
+      if (!logInfo.exists) return logInfo.message || fallback;
+      return `${logInfo.truncated ? "[... earlier log content omitted ...]\n" : ""}${logInfo.content || ""}`;
+    }
+
+    function applyStatusLogs(data) {
+      const logs = data.logs || {};
+      const vapLogInfo = logs["vap_log.txt"];
+      updateLogContent(
+        logOutput,
+        vapLogInfo?.exists
+          ? formatLogInfo(vapLogInfo)
+          : (data.output || vapLogInfo?.message || "")
+      );
+      updateLogContent(deployLogOutput, formatLogInfo(logs["vllm_deploy.log"]));
+      updateLogContent(benchLogOutput, formatLogInfo(logs["vllm_bench.log"]));
+    }
+
+    function clearLogPanels() {
+      updateLogContent(logOutput, "", { forceScroll: true });
+      updateLogContent(deployLogOutput, "", { forceScroll: true });
+      updateLogContent(benchLogOutput, "", { forceScroll: true });
+    }
+
     async function loadLogFile(fileName, target) {
       const hasExistingContent = target.textContent.trim().length > 0;
       if (!hasExistingContent) updateLogContent(target, "Loading...", { forceScroll: true });
@@ -3042,10 +3074,7 @@
         const response = await fetch(`/api/log-file?name=${encodeURIComponent(fileName)}`);
         const data = await readJsonResponse(response, "Failed to read log");
         if (!response.ok) throw new Error(data.message || "Failed to read log");
-        updateLogContent(
-          target,
-          data.exists ? data.content : (data.message || `This run has not generated ${fileName} yet`)
-        );
+        updateLogContent(target, formatLogInfo(data, `This run has not generated ${fileName} yet`));
       } catch (error) {
         updateLogContent(target, error.message);
       }
@@ -3115,15 +3144,6 @@
       link.remove();
       URL.revokeObjectURL(url);
       showToast("Log download started");
-    }
-
-    function refreshFileLogs() {
-      if (document.querySelector('[data-log-panel="deploy"]').classList.contains("active")) {
-        loadLogFile("vllm_deploy.log", deployLogOutput);
-      }
-      if (document.querySelector('[data-log-panel="bench"]').classList.contains("active")) {
-        loadLogFile("vllm_bench.log", benchLogOutput);
-      }
     }
 
     function parseValue(raw) {
@@ -3288,6 +3308,7 @@
       document.getElementById("distributed-panel")
         .classList.toggle("distributed-disabled", !enabled);
       document.getElementById("dist-ray-port").disabled = !enabled;
+      document.getElementById("dist-sshkey").disabled = !enabled;
       document.getElementById("add-worker").disabled = !enabled;
       document.querySelectorAll("#worker-nodes-list input, #worker-nodes-list button")
         .forEach((element) => { element.disabled = !enabled; });
@@ -3311,9 +3332,14 @@
       document.getElementById("clock-probe-interface").disabled = !hardwareEnabled;
       document.getElementById("clock-probe-phc").disabled = !hardwareEnabled;
       document.getElementById("clock-probe-hw-interval").disabled = !hardwareEnabled;
-      document.querySelectorAll("#clock-probe-ptp-logs input, #clock-probe-ptp-logs button")
-        .forEach((element) => { element.disabled = !hardwareEnabled; });
-      document.getElementById("add-clock-probe-ptp-log").disabled = !hardwareEnabled;
+    }
+
+    function updateProfilerControls() {
+      const enabled = document.getElementById("profiler-enable").checked;
+      document.getElementById("profiler-panel")
+        .classList.toggle("distributed-disabled", !enabled);
+      document.querySelectorAll("#profiler-settings input, #profiler-settings button")
+        .forEach((element) => { element.disabled = !enabled; });
     }
 
     function addWorker(value = "") {
@@ -3327,18 +3353,6 @@
       });
       document.getElementById("worker-nodes-list").appendChild(row);
       updateDistributedControls();
-    }
-
-    function addClockProbePtpLog(hostname = "", path = "") {
-      const row = document.createElement("div");
-      row.className = "pair-row";
-      row.innerHTML = `
-        <input class="clock-ptp-host mono" value="${escapeAttr(hostname)}" placeholder="worker.example.com" />
-        <input class="clock-ptp-path mono" value="${escapeAttr(path)}" placeholder="/path/to/ptp4l.log" />
-        <button class="small danger" type="button"><span class="button-icon" aria-hidden="true">×</span>Delete</button>`;
-      row.querySelector("button").addEventListener("click", () => row.remove());
-      document.getElementById("clock-probe-ptp-logs").appendChild(row);
-      updateClockProbeControls();
     }
 
     function addDevice(value = "") {
@@ -3399,12 +3413,6 @@
       const workerNodes = readList("#worker-nodes-list .worker-input");
       const distributedEnabled = document.getElementById("dist-enable").checked;
       const rayPort = Number(document.getElementById("dist-ray-port").value) || 6379;
-      const ptpLogs = {};
-      document.querySelectorAll("#clock-probe-ptp-logs .pair-row").forEach((row) => {
-        const hostname = row.querySelector(".clock-ptp-host").value.trim();
-        const path = row.querySelector(".clock-ptp-path").value.trim();
-        if (hostname && path) ptpLogs[hostname] = path;
-      });
 
       return {
         model_cfg: {
@@ -3415,6 +3423,7 @@
           enable: distributedEnabled,
           ray_port: rayPort,
           worker_nodes: workerNodes,
+          sshkey_path: document.getElementById("dist-sshkey").value.trim() || null,
         },
         clock_probe_cfg: {
           enabled: document.getElementById("clock-probe-enable").checked,
@@ -3427,11 +3436,14 @@
           hardware_interval_ms: Number(document.getElementById("clock-probe-hw-interval").value) || 50,
           hardware_interface: document.getElementById("clock-probe-interface").value.trim() || null,
           hardware_phc_device: document.getElementById("clock-probe-phc").value.trim() || null,
-          hardware_ptp_logs: ptpLogs,
+          hardware_ptp_logs: {},
         },
         vllm_deploy_cfg: readKv("deploy-kv"),
         vllm_bench_cfg: readKv("bench-kv"),
-        profiler_cfg: readKv("profiler-kv"),
+        profiler_cfg: {
+          ...readKv("profiler-kv"),
+          enable: document.getElementById("profiler-enable").checked,
+        },
         container_cfg: {
           image_name: document.getElementById("image_name").value.trim(),
           image_tag: document.getElementById("image_tag").value.trim(),
@@ -3458,6 +3470,7 @@
       };
       document.getElementById("dist-enable").checked = Boolean(dist.enable);
       document.getElementById("dist-ray-port").value = dist.ray_port ?? 6379;
+      document.getElementById("dist-sshkey").value = dist.sshkey_path || "";
       document.getElementById("worker-nodes-list").innerHTML = "";
       (dist.worker_nodes || []).forEach(addWorker);
       updateDistributedControls();
@@ -3465,22 +3478,22 @@
       const clockProbe = effectiveConfig.clock_probe_cfg || {};
       document.getElementById("clock-probe-enable").checked = Boolean(clockProbe.enabled && dist.enable);
       document.getElementById("clock-probe-clc").checked = Boolean(clockProbe.apply_clc_on_warning);
-      document.getElementById("clock-probe-mode").value = clockProbe.mode || "software";
+      document.getElementById("clock-probe-mode").value = clockProbe.mode || "hardware";
       document.getElementById("clock-probe-required").checked = Boolean(clockProbe.required);
       document.getElementById("clock-probe-port").value = clockProbe.port ?? 31990;
       document.getElementById("clock-probe-interval").value = clockProbe.interval_ms ?? 100;
       document.getElementById("clock-probe-hw-interval").value = clockProbe.hardware_interval_ms ?? 50;
       document.getElementById("clock-probe-interface").value = clockProbe.hardware_interface || "";
       document.getElementById("clock-probe-phc").value = clockProbe.hardware_phc_device || "";
-      document.getElementById("clock-probe-ptp-logs").innerHTML = "";
-      Object.entries(clockProbe.hardware_ptp_logs || {}).forEach(
-        ([hostname, path]) => addClockProbePtpLog(hostname, path),
-      );
       updateClockProbeControls();
 
+      const profiler = { ...(effectiveConfig.profiler_cfg || {}) };
+      document.getElementById("profiler-enable").checked = profiler.enable !== false;
+      delete profiler.enable;
       renderKv("deploy-kv", effectiveConfig.vllm_deploy_cfg);
       renderKv("bench-kv", effectiveConfig.vllm_bench_cfg);
-      renderKv("profiler-kv", effectiveConfig.profiler_cfg);
+      renderKv("profiler-kv", profiler);
+      updateProfilerControls();
 
       document.getElementById("devices-list").innerHTML = "";
       (container.devices || []).forEach(addDevice);
@@ -3573,10 +3586,33 @@
     }
 
     function buildValidationSteps(config) {
-      let resourceCheckPromise = null;
-      const getResourceChecks = () => {
-        if (!resourceCheckPromise) resourceCheckPromise = checkResourcesOnServer(config);
-        return resourceCheckPromise;
+      let modelResourcePromise = null;
+      let dockerResourcePromise = null;
+      let workerDockerResourcePromise = null;
+      let containerResourcePromise = null;
+      const getModelResources = () => {
+        if (!modelResourcePromise) {
+          modelResourcePromise = checkResourceScopeOnServer(config, "model");
+        }
+        return modelResourcePromise;
+      };
+      const getDockerResources = () => {
+        if (!dockerResourcePromise) {
+          dockerResourcePromise = checkResourceScopeOnServer(config, "docker");
+        }
+        return dockerResourcePromise;
+      };
+      const getWorkerDockerResources = () => {
+        if (!workerDockerResourcePromise) {
+          workerDockerResourcePromise = checkResourceScopeOnServer(config, "worker-docker");
+        }
+        return workerDockerResourcePromise;
+      };
+      const getContainerResources = () => {
+        if (!containerResourcePromise) {
+          containerResourcePromise = checkResourceScopeOnServer(config, "container");
+        }
+        return containerResourcePromise;
       };
 
       return [
@@ -3661,7 +3697,7 @@
           title: "Model Weights Exist",
           detail: "Check model root and full model weight path",
           run: async () => {
-            const data = await getResourceChecks();
+            const data = await getModelResources();
             assertResourcePayload(data);
             const modelChecks = (data.checks || []).filter((check) => check.name.startsWith("Model"));
             assertChecksOk(modelChecks);
@@ -3670,9 +3706,9 @@
         },
         {
           title: "Docker Images Exist",
-          detail: "Check the configured image on the local and enabled worker Docker daemons",
+          detail: "Check the configured image on the local Docker daemon",
           run: async () => {
-            const data = await getResourceChecks();
+            const data = await getDockerResources();
             assertResourcePayload(data);
             const imageChecks = (data.checks || []).filter((check) => check.name.includes("Docker image"));
             assertChecksOk(imageChecks);
@@ -3680,10 +3716,25 @@
           },
         },
         {
+          title: "Worker Docker Images Exist",
+          detail: "Check the configured image on each enabled worker Docker daemon over SSH",
+          run: async () => {
+            const dist = config.distributed_cfg;
+            if (!dist || !dist.enable) return "Distributed config is disabled";
+            const data = await getWorkerDockerResources();
+            assertResourcePayload(data);
+            const imageChecks = (data.checks || []).filter((check) => check.name.includes("Docker image"));
+            if (!imageChecks.length) return data.message || "No worker Docker checks are required";
+            assertChecksOk(imageChecks);
+            return imageChecks.map((check) => check.message).join("\n");
+          },
+        },
+        {
           title: "Profiler Config",
-          detail: "Check required profiler fields and numeric types",
+          detail: "Check whether profiling is enabled and required profiler fields",
           run: () => {
             assertKvObject(config.profiler_cfg, "Profiler config");
+            if (config.profiler_cfg.enable === false) return "Profiler is disabled";
             assertTruthy(config.profiler_cfg.profiler, "profiler is required");
             assertTruthy(config.profiler_cfg.torch_profiler_dir, "torch_profiler_dir is required");
             ["delay_iterations", "max_iterations"].forEach((key) => {
@@ -3742,7 +3793,7 @@
           title: "Mount Sources and Devices Exist",
           detail: "Check whether container devices and mounts.source exist",
           run: async () => {
-            const data = await getResourceChecks();
+            const data = await getContainerResources();
             assertResourcePayload(data);
             const ioChecks = (data.checks || []).filter((check) => (
               check.name.startsWith("Device file") || check.name.startsWith("Mount source")
@@ -3825,11 +3876,39 @@
             if (!(probe.interval_ms > 0) || !(probe.hardware_interval_ms > 0)) {
               throw new Error("Clock probe intervals must be positive");
             }
-            if (probe.mode === "hardware") {
-              assertTruthy(probe.hardware_interface, "Hardware interface is required");
-              assertTruthy(probe.hardware_phc_device, "PHC device is required");
+            const hardwareSelection = probe.mode === "software"
+              ? "software timestamping"
+              : "per-node PHC auto-detection";
+            return `${probe.mode} probing on port ${probe.port}; ${hardwareSelection}; CLC ${probe.apply_clc_on_warning ? "enabled" : "disabled"}`;
+          },
+        },
+        {
+          title: "Clock Probe Hardware Capability",
+          detail: "Bind every node to the Ray/VLLM NIC and its PHC; the first worker is GM, and supported images apt-install linuxptp if needed",
+          run: async () => {
+            const probe = config.clock_probe_cfg || {};
+            if (!probe.enabled) return "Clock probe is disabled";
+            if (probe.mode === "software") return "Software mode does not require PHC hardware";
+            const data = await checkClockProbeOnServer(config);
+            const failed = (data.nodes || []).filter((item) => !item.usable);
+            if (probe.mode === "hardware" && (data.valid === false || failed.length)) {
+              throw new Error(
+                failed.map((item) => item.message || item.reason || item.node).join("\n")
+                || data.message
+                || "Hardware timestamping is unavailable",
+              );
             }
-            return `${probe.mode} probing on port ${probe.port}; CLC ${probe.apply_clc_on_warning ? "enabled" : "disabled"}`;
+            const details = (data.nodes || []).map((item) => item.message).filter(Boolean).join("\n")
+              || data.message;
+            const warnings = data.warnings || [];
+            if (failed.length || warnings.length) {
+              const unique = [...new Set([...warnings, details].filter(Boolean))];
+              return {
+                status: "warning",
+                message: unique.join("\n"),
+              };
+            }
+            return details;
           },
         },
       ];
@@ -3860,6 +3939,34 @@
       return data;
     }
 
+    async function checkResourceScopeOnServer(config, scope) {
+      const response = await fetch(`/api/check-${scope}-resources`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      if (response.status === 404) {
+        throw new Error(`The ${scope} resource check API is unavailable. Restart VAP and refresh the page.`);
+      }
+      const data = await readJsonResponse(response, `${scope} resource check failed`);
+      if (!response.ok) throw new Error(data.error || data.message || `${scope} resource check failed`);
+      return data;
+    }
+
+    async function checkClockProbeOnServer(config) {
+      const response = await fetch("/api/check-clock-probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      if (response.status === 404) {
+        throw new Error("The Clock Probe hardware check API is unavailable. Restart VAP and refresh the page.");
+      }
+      const data = await readJsonResponse(response, "Clock Probe hardware check failed");
+      if (!response.ok) throw new Error(data.error || data.message || "Clock Probe hardware check failed");
+      return data;
+    }
+
     async function checkMachinesOnServer(config) {
       const response = await fetch("/api/check-machines", {
         method: "POST",
@@ -3875,7 +3982,7 @@
     }
 
     function assertResourcePayload(data) {
-      if (data.valid === false) {
+      if (Array.isArray(data.errors) && data.errors.length) {
         const messages = (data.errors || [])
           .map((error) => `${error.path || "root"}: ${error.message || error}`)
           .join("\n");
@@ -4007,12 +4114,9 @@
       const response = await fetch("/api/run/status");
       const data = await readJsonResponse(response, "Failed to read run status");
       if (!response.ok) throw new Error(data.message || "Failed to read run status");
-      const vapLogInfo = data.logs?.["vap_log.txt"];
-      const vapLogContent = vapLogInfo?.exists
-        ? `${vapLogInfo.truncated ? "[... earlier log content omitted ...]\n" : ""}${vapLogInfo.content}`
-        : (data.output || vapLogInfo?.message || "");
       currentRunDir = data.run_dir || currentRunDir;
-      updateLogContent(logOutput, vapLogContent);
+      applyStatusLogs(data);
+      const vapLogContent = logOutput.textContent || "";
       const profileReady = vapLogContent.includes("Profile archive has been saved to:");
       const perfettoStarted = vapLogContent.includes("Perfetto Trace Processor started with pid");
       const perfettoUnavailable = !perfettoStarted
@@ -4036,13 +4140,12 @@
         setRunState("", "Idle");
         stopStatusPolling();
       }
-      refreshFileLogs();
     }
 
     async function runVap(config = buildConfig()) {
       currentRunDir = null;
       hidePerfettoFallback();
-      updateLogContent(logOutput, "", { forceScroll: true });
+      clearLogPanels();
       setTensorBoardReady(false);
       setProfileActionsReady(false);
       setRunState("running", "Starting");
@@ -4063,15 +4166,24 @@
     }
 
     async function stopVap() {
+      if (stopInFlight) return;
+      stopInFlight = true;
       setRunState("running", "Stopping");
-      const response = await fetch("/api/run/stop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const data = await readJsonResponse(response, "Failed to stop");
-      showToast(data.message || "Stop signal sent");
-      await pollStatus();
+      try {
+        const response = await fetch("/api/run/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const data = await readJsonResponse(response, "Failed to stop");
+        showToast(data.message || "Stop signal sent");
+        await pollStatus();
+      } finally {
+        stopInFlight = false;
+        if (runStatus.textContent === "Stopping") {
+          btnStop.disabled = true;
+        }
+      }
     }
 
     function openTensorBoard() {
@@ -4253,8 +4365,11 @@
       updateClockProbeControls();
       scheduleConfigDraftSave();
     });
-    document.getElementById("add-clock-probe-ptp-log").addEventListener("click", () => {
-      addClockProbePtpLog();
+    document.getElementById("profiler-enable").addEventListener("change", () => {
+      updateProfilerControls();
+      if (document.getElementById("profiler-enable").checked) {
+        openConfigPanel(document.getElementById("profiler-panel"));
+      }
       scheduleConfigDraftSave();
     });
     document.getElementById("add-device").addEventListener("click", () => {

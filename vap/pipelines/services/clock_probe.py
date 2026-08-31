@@ -39,6 +39,8 @@ class ClockProbeLifecycle:
         self.log_path = log_path
         self.date_str = date_str
         self._active = False
+        self._ptp_logs_override: dict[str, str] | None = None
+        self._ptp_nodes_override: dict[str, dict[str, str]] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -47,6 +49,10 @@ class ClockProbeLifecycle:
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def has_session(self) -> bool:
+        return self.local_session_path.is_file()
 
     @property
     def required(self) -> bool:
@@ -136,11 +142,15 @@ class ClockProbeLifecycle:
                 raise RuntimeError(message)
             logger.warning(message)
             return
+        session_failed = False
         try:
-            logger.info(
-                "Clock probe fitting summary:\n%s",
-                self.summarize_session(),
-            )
+            session = json.loads(self.local_session_path.read_text(encoding="utf-8"))
+            summary = format_clock_summary(session)
+            session_failed = str(session.get("status") or "").upper() == "FAIL"
+            if session_failed:
+                logger.warning("Clock probe calibration FAILED:\n%s", summary)
+            else:
+                logger.info("Clock probe fitting summary:\n%s", summary)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             message = f"Cannot summarize clock probe session: {exc}"
             if self.required:
@@ -150,6 +160,10 @@ class ClockProbeLifecycle:
             "Clock model session saved to %s",
             self.local_session_path,
         )
+        if session_failed and self.required:
+            raise RuntimeError(
+                "Required Clock Probe calibration failed; see the fitting summary"
+            )
 
     def cleanup(self) -> None:
         if not self._active or not self.master_runner.is_started:
@@ -159,22 +173,26 @@ class ClockProbeLifecycle:
         except Exception as exc:
             logger.warning("Failed to stop clock probe during cleanup: %s", exc)
 
+    def set_ptp_logs(self, logs: dict[str, str]) -> None:
+        self._ptp_logs_override = dict(logs)
+
+    def set_ptp_nodes(self, nodes: dict[str, dict[str, str]]) -> None:
+        self._ptp_nodes_override = {
+            address: dict(descriptor) for address, descriptor in nodes.items()
+        }
+
     def probe_config(self) -> ProbeConfig:
         config = self.config.clock_probe_cfg
-        mode = config.mode
-        if mode == "auto" and not (
-            config.hardware_interface and config.hardware_phc_device
-        ):
-            logger.info(
-                "Clock probe auto mode has no explicit PHC mapping; "
-                "using software probing"
-            )
-            mode = "software"
-
+        ptp_logs = (
+            dict(self._ptp_logs_override)
+            if self._ptp_logs_override is not None
+            else dict(config.hardware_ptp_logs)
+        )
         kwargs = {
             "ray_address": config.ray_address,
-            "mode": mode,
-            "hardware_ptp_logs": dict(config.hardware_ptp_logs),
+            "mode": config.mode,
+            "hardware_ptp_logs": ptp_logs,
+            "hardware_ptp_nodes": dict(self._ptp_nodes_override or {}),
             "hardware_interval_ms": config.hardware_interval_ms,
             "port": config.port,
             "interval_ms": config.interval_ms,

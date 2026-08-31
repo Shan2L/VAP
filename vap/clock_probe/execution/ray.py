@@ -22,12 +22,16 @@ from ..calibration.hardware import (
     build_hardware_model,
     build_hardware_session,
 )
-from ..calibration.ptp_health import evaluate_ptp_health, parse_ptp4l_log
+from ..calibration.ptp_health import (
+    evaluate_ptp_health,
+    parse_ptp4l_log,
+    ptp_role_from_state,
+)
 from ..calibration.software import ModelConfig, build_clock_model
 from ..sampling.phc import (
     PhcClock,
-    assert_phc_matches_interface,
     capture_phc_sample,
+    discover_hardware_timestamp_phc,
 )
 from ..sampling.probe import (
     ContinuousProbeCollector,
@@ -316,23 +320,43 @@ class ClockNodeAgent:  # pylint: disable=too-many-instance-attributes
     def hardware_preflight(self, config: dict[str, Any]) -> dict[str, Any]:
         """Check PHC access and current ptp4l lock before choosing hardware mode."""
         hostname = str(self.identity["hostname"])
-        log_path = (config.get("ptp_logs") or {}).get(hostname) or config.get("ptp_log")
+        ray_address = str(self.node["address"])
+        node_config = (config.get("ptp_nodes") or {}).get(ray_address) or {}
+        log_path = (
+            node_config.get("ptp_log")
+            or (config.get("ptp_logs") or {}).get(hostname)
+            or config.get("ptp_log")
+        )
         try:
-            if not log_path:
-                raise ValueError(f"No ptp4l log configured for {hostname}")
-            hardware = assert_phc_matches_interface(
-                str(config["interface"]),
-                str(config["phc_device"]),
+            selected, diagnostics = self._discover_hardware_phc(
+                {
+                    **config,
+                    "interface": (
+                        node_config.get("interface") or config.get("interface")
+                    ),
+                    "phc_device": (
+                        node_config.get("phc_device") or config.get("phc_device")
+                    ),
+                }
             )
+            if not log_path:
+                raise ValueError(
+                    f"No ptp4l log configured for Ray node {ray_address} ({hostname})"
+                )
             text = Path(log_path).read_text(encoding="utf-8")
             parsed = parse_ptp4l_log(text)
             states = parsed["states"]
             if not states:
                 raise ValueError("ptp4l log has no port state")
-            state = str(states[-1]["state"])
-            role = (
-                "master" if state == "MASTER" else ("slave" if state == "SLAVE" else "")
-            )
+            latest_state = states[-1]
+            state = str(latest_state["state"])
+            logged_interface = str(latest_state.get("interface") or "")
+            if logged_interface and logged_interface != selected["interface"]:
+                raise ValueError(
+                    f"ptp4l locked {logged_interface}, but Clock Probe selected "
+                    f"{selected['interface']}"
+                )
+            role = ptp_role_from_state(state)
             if not role:
                 raise ValueError(f"ptp4l port is not locked: {state}")
             model_config = HardwareModelConfig(**config.get("model_config", {}))
@@ -343,18 +367,35 @@ class ClockNodeAgent:  # pylint: disable=too-many-instance-attributes
             )
             if health.status != "PASS":
                 raise ValueError("; ".join(health.reasons))
+            expected_local_clock_id = node_config.get("local_clock_id")
+            if role == "master":
+                if not health.grandmaster_clock_id:
+                    raise ValueError("PTP master log has no local clock identity")
+                if (
+                    expected_local_clock_id
+                    and health.grandmaster_clock_id != expected_local_clock_id
+                ):
+                    raise ValueError(
+                        "PTP master clock identity mismatch: "
+                        f"log={health.grandmaster_clock_id!r}, "
+                        f"configured={expected_local_clock_id!r}"
+                    )
             self.hardware_config = {
                 **config,
+                "interface": selected["interface"],
+                "phc_device": selected["phc_device"],
                 "ptp_log": str(log_path),
-                "hardware_timestamping": hardware.to_dict(),
+                "hardware_timestamping": selected["hardware_timestamping"],
+                "phc_capture_method": selected["capture_method"],
+                "phc_detection": diagnostics,
             }
             self.hardware_role = role
             return {
                 "usable": True,
                 "hostname": hostname,
                 "role": role,
-                "phc_device": config["phc_device"],
-                "interface": config["interface"],
+                **selected,
+                "diagnostics": diagnostics,
             }
         except (OSError, RuntimeError, ValueError, KeyError) as error:
             return {
@@ -362,6 +403,31 @@ class ClockNodeAgent:  # pylint: disable=too-many-instance-attributes
                 "hostname": hostname,
                 "reason": str(error),
             }
+
+    def _discover_hardware_phc(
+        self,
+        config: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Select and read-test a hardware-timestamp-capable PHC on this node."""
+        return discover_hardware_timestamp_phc(
+            [
+                {
+                    "name": interface.name,
+                    "index": interface.index,
+                    "is_up": interface.is_up,
+                    "is_loopback": interface.is_loopback,
+                    "ipv4_addresses": [
+                        address.address for address in interface.ipv4_addresses
+                    ],
+                }
+                for interface in self.interfaces
+            ],
+            preferred_interface=config.get("interface"),
+            preferred_phc_device=config.get("phc_device"),
+            node_address=str(self.node["address"]),
+            hostname=str(self.identity["hostname"]),
+            capture=True,
+        )
 
     def start_hardware_sampling(self) -> dict[str, Any]:
         """Start local PHC sampling after successful preflight."""
@@ -744,15 +810,30 @@ class ClockCalibrationCoordinator:  # pylint: disable=too-many-instance-attribut
                     "failures": failures,
                 }
             else:
-                session = build_hardware_session(
-                    models,
-                    session_id=self.session_id,
-                )
-                session["execution"] = {
-                    "requested_mode": self.requested_mode,
-                    "selected_mode": self.selected_mode,
-                    "fallback_reasons": self.fallback_reasons,
-                }
+                try:
+                    session = build_hardware_session(
+                        models,
+                        session_id=self.session_id,
+                    )
+                except ValueError as error:
+                    session = {
+                        "schema_version": 3,
+                        "clock_source": "ptp_hardware",
+                        "session_id": self.session_id,
+                        "status": "FAIL",
+                        "models": models,
+                        "failures": [
+                            {
+                                "hostname": "cluster",
+                                "reasons": [str(error)],
+                            }
+                        ],
+                    }
+            session["execution"] = {
+                "requested_mode": self.requested_mode,
+                "selected_mode": self.selected_mode,
+                "fallback_reasons": self.fallback_reasons,
+            }
             self._cleanup_actors(ray)
             return session
 
@@ -952,6 +1033,10 @@ def start_manual_calibration(args: Any) -> dict[str, Any]:
                 "interface": args.hardware_interface,
                 "phc_device": args.hardware_phc_device,
                 "ptp_logs": dict(args.hardware_ptp_logs),
+                "ptp_nodes": {
+                    address: dict(descriptor)
+                    for address, descriptor in args.hardware_ptp_nodes.items()
+                },
                 "interval_ms": args.hardware_interval_ms,
                 "model_config": dict(args.hardware_model_config),
             },
@@ -1007,9 +1092,10 @@ class ProbeConfig:  # pylint: disable=too-many-instance-attributes
 
     ray_address: str = "auto"
     mode: str = "auto"
-    hardware_interface: str = "enp196s0f1np1"
-    hardware_phc_device: str = "/dev/ptp3"
+    hardware_interface: str | None = None
+    hardware_phc_device: str | None = None
     hardware_ptp_logs: dict[str, str] = field(default_factory=dict)
+    hardware_ptp_nodes: dict[str, dict[str, str]] = field(default_factory=dict)
     hardware_interval_ms: float = 50.0
     hardware_model_config: dict[str, Any] = field(default_factory=dict)
     reference_host: str | None = None

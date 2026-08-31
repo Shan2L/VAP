@@ -11,6 +11,7 @@ from .chrome import (
     is_nccl_kernel,
     iter_parsed_events,
     microseconds_to_ns,
+    parse_rank_list,
 )
 
 COLLECTIVE_ALIASES = {
@@ -54,6 +55,7 @@ class NCCLKernel:  # pylint: disable=too-many-instance-attributes
     name: str
     collective: str
     process_group: str
+    group_ranks: tuple[int, ...] | None
     group_size: int | None
     dtype: str | None
     in_nelems: int | None
@@ -79,6 +81,7 @@ class CommsMetadata:
     seq_num: int | None
     collective: str | None
     process_group: str | None
+    group_ranks: tuple[int, ...] | None
     group_size: int | None
     in_nelems: int | None
     out_nelems: int | None
@@ -194,6 +197,7 @@ def _comms_metadata_from_args(args: dict[str, Any]) -> CommsMetadata:
         seq_num=_first_optional_int(args, SEQ_NUM_KEYS),
         collective=normalize_collective(args.get("Collective name")),
         process_group=str(args.get("Process Group Name") or "unknown"),
+        group_ranks=parse_rank_list(args.get("Process Group Ranks")),
         group_size=_optional_int(args.get("Group size")),
         in_nelems=_optional_int(args.get("In msg nelems")),
         out_nelems=_optional_int(args.get("Out msg nelems")),
@@ -244,14 +248,16 @@ def _build_nccl_kernel(
 ) -> NCCLKernel:
     args = event.get("args") or {}
     collective = normalize_collective(args.get("Collective name"))
-    if collective == "unknown":
-        collective = normalize_collective(str(event.get("name", "")))
     if comms is not None and collective == "unknown" and comms.collective:
         collective = comms.collective
 
     process_group = str(args.get("Process Group Name") or "unknown")
     if process_group == "unknown" and comms is not None and comms.process_group:
         process_group = comms.process_group
+
+    group_ranks = parse_rank_list(args.get("Process Group Ranks"))
+    if group_ranks is None and comms is not None:
+        group_ranks = comms.group_ranks
 
     group_size = _optional_int(args.get("Group size"))
     if group_size is None and comms is not None:
@@ -282,6 +288,7 @@ def _build_nccl_kernel(
         name=str(event.get("name", "")),
         collective=collective,
         process_group=process_group,
+        group_ranks=group_ranks,
         group_size=group_size,
         dtype=dtype,
         in_nelems=in_nelems,
@@ -336,6 +343,20 @@ def _validate_member_group(
     ranks_present = {member.rank for member in members}
     if len(members) != len(ranks_present):
         return f"{collective_id} contains duplicate ranks"
+    memberships = {
+        tuple(sorted(member.group_ranks))
+        for member in members
+        if member.group_ranks is not None
+    }
+    if len(memberships) > 1:
+        return f"{collective_id} has inconsistent process-group membership"
+    if memberships:
+        expected_ranks = set(next(iter(memberships)))
+        if ranks_present != expected_ranks:
+            return (
+                f"{collective_id} has ranks {sorted(ranks_present)} but "
+                f"Process Group Ranks={sorted(expected_ranks)}"
+            )
     expected_size = next(
         (member.group_size for member in members if member.group_size is not None),
         None,
@@ -363,9 +384,17 @@ def _match_by_seq_num(kernels: list[NCCLKernel]) -> MatchCollectivesResult:
             failure_reason="Not every NCCL kernel has seq_num for seq_num matching",
         )
 
-    per_rank_key: dict[tuple[str, int, int], list[NCCLKernel]] = defaultdict(list)
+    per_rank_key: dict[
+        tuple[str, tuple[int, ...] | None, int, int],
+        list[NCCLKernel],
+    ] = defaultdict(list)
     for kernel in kernels:
-        per_rank_key[(kernel.process_group, kernel.seq_num, kernel.rank)].append(kernel)
+        membership = (
+            None if kernel.group_ranks is None else tuple(sorted(kernel.group_ranks))
+        )
+        per_rank_key[
+            (kernel.process_group, membership, kernel.seq_num, kernel.rank)
+        ].append(kernel)
     ambiguous_groups = sum(1 for bucket in per_rank_key.values() if len(bucket) > 1)
     if ambiguous_groups:
         return MatchCollectivesResult(
@@ -379,13 +408,22 @@ def _match_by_seq_num(kernels: list[NCCLKernel]) -> MatchCollectivesResult:
             ),
         )
 
-    grouped: dict[tuple[str, int], list[NCCLKernel]] = defaultdict(list)
+    grouped: dict[
+        tuple[str, tuple[int, ...] | None, int],
+        list[NCCLKernel],
+    ] = defaultdict(list)
     for kernel in kernels:
-        grouped[(kernel.process_group, kernel.seq_num)].append(kernel)
+        membership = (
+            None if kernel.group_ranks is None else tuple(sorted(kernel.group_ranks))
+        )
+        grouped[(kernel.process_group, membership, kernel.seq_num)].append(kernel)
 
     matched: dict[str, list[NCCLKernel]] = {}
-    for (process_group, seq_num), members in sorted(grouped.items()):
-        collective_id = f"pg={process_group}:seq={seq_num}"
+    for (process_group, membership, seq_num), members in sorted(
+        grouped.items(),
+        key=lambda item: repr(item[0]),
+    ):
+        collective_id = f"pg={process_group}:members={membership}:seq={seq_num}"
         failure = _validate_member_group(collective_id, members, ranks)
         if failure is not None:
             return MatchCollectivesResult(
@@ -409,26 +447,113 @@ def _match_by_seq_num(kernels: list[NCCLKernel]) -> MatchCollectivesResult:
 
 def _match_by_fingerprint(kernels: list[NCCLKernel]) -> MatchCollectivesResult:
     ranks = _collect_ranks(kernels)
-    buckets: dict[tuple[str, str, int], list[NCCLKernel]] = defaultdict(list)
+    buckets: dict[
+        tuple[str, tuple[int, ...] | None, str, int],
+        list[NCCLKernel],
+    ] = defaultdict(list)
     for kernel in kernels:
-        buckets[(kernel.process_group, kernel.fingerprint, kernel.rank)].append(kernel)
+        membership = (
+            None if kernel.group_ranks is None else tuple(sorted(kernel.group_ranks))
+        )
+        buckets[
+            (kernel.process_group, membership, kernel.fingerprint, kernel.rank)
+        ].append(kernel)
     for bucket in buckets.values():
         bucket.sort(key=lambda item: (item.ts_ns, item.correlation or 0))
 
     pg_fingerprints = sorted(
-        {(process_group, fingerprint) for process_group, fingerprint, _rank in buckets}
+        {
+            (process_group, membership, fingerprint)
+            for process_group, membership, fingerprint, _rank in buckets
+        },
+        key=repr,
     )
     matched: dict[str, list[NCCLKernel]] = {}
     ambiguous_groups = 0
     unmatched = 0
 
-    for process_group, fingerprint in pg_fingerprints:
+    for process_group, membership, fingerprint in pg_fingerprints:
+        bucket_members = [
+            kernel
+            for kernel in kernels
+            if kernel.process_group == process_group
+            and (
+                None
+                if kernel.group_ranks is None
+                else tuple(sorted(kernel.group_ranks))
+            )
+            == membership
+            and kernel.fingerprint == fingerprint
+        ]
+        memberships = {
+            tuple(sorted(kernel.group_ranks))
+            for kernel in bucket_members
+            if kernel.group_ranks is not None
+        }
+        if not memberships:
+            return MatchCollectivesResult(
+                matched=matched,
+                unmatched=len(kernels) - sum(len(items) for items in matched.values()),
+                matching_mode="fingerprint",
+                ambiguous_groups=ambiguous_groups + 1,
+                matching_failed=True,
+                failure_reason=(
+                    "Insufficient NCCL metadata for fingerprint matching: "
+                    f"pg={process_group} has no Process Group Ranks"
+                ),
+            )
+        if len(memberships) != 1:
+            return MatchCollectivesResult(
+                matched=matched,
+                unmatched=len(kernels) - sum(len(items) for items in matched.values()),
+                matching_mode="fingerprint",
+                ambiguous_groups=ambiguous_groups + 1,
+                matching_failed=True,
+                failure_reason=(
+                    "Inconsistent Process Group Ranks for fingerprint matching: "
+                    f"pg={process_group}"
+                ),
+            )
+        member_ranks = sorted(next(iter(memberships)))
+        if not set(member_ranks).issubset(ranks):
+            return MatchCollectivesResult(
+                matched=matched,
+                unmatched=len(kernels) - sum(len(items) for items in matched.values()),
+                matching_mode="fingerprint",
+                ambiguous_groups=ambiguous_groups + 1,
+                matching_failed=True,
+                failure_reason=(
+                    f"pg={process_group} references ranks outside the Trace set"
+                ),
+            )
+        outside = [
+            kernel.rank
+            for kernel in bucket_members
+            if kernel.rank not in set(member_ranks)
+        ]
+        if outside:
+            return MatchCollectivesResult(
+                matched=matched,
+                unmatched=len(kernels) - sum(len(items) for items in matched.values()),
+                matching_mode="fingerprint",
+                ambiguous_groups=ambiguous_groups + 1,
+                matching_failed=True,
+                failure_reason=(
+                    f"pg={process_group} has kernels from non-member ranks "
+                    f"{sorted(set(outside))}"
+                ),
+            )
         counts = {
-            rank: len(buckets.get((process_group, fingerprint, rank), []))
-            for rank in ranks
+            rank: len(
+                buckets.get(
+                    (process_group, membership, fingerprint, rank),
+                    [],
+                )
+            )
+            for rank in member_ranks
         }
         unique_counts = set(counts.values())
-        if len(unique_counts) != 1:
+        if len(unique_counts) != 1 or not unique_counts or 0 in unique_counts:
             ambiguous_groups += 1
             unmatched += sum(counts.values())
             continue
@@ -436,9 +561,13 @@ def _match_by_fingerprint(kernels: list[NCCLKernel]) -> MatchCollectivesResult:
         shared = next(iter(unique_counts))
         for index in range(shared):
             members = [
-                buckets[(process_group, fingerprint, rank)][index] for rank in ranks
+                buckets[(process_group, membership, fingerprint, rank)][index]
+                for rank in member_ranks
             ]
-            collective_id = f"pg={process_group}:fp={fingerprint}:idx={index}"
+            collective_id = (
+                f"pg={process_group}:members={membership}:"
+                f"fp={fingerprint}:idx={index}"
+            )
             failure = _validate_member_group(collective_id, members, ranks)
             if failure is not None:
                 return MatchCollectivesResult(
@@ -553,6 +682,11 @@ def check_nccl_traces(
         if not path.is_file():
             raise FileNotFoundError(path)
         kernels.extend(extract_nccl_kernels(path, rank))
+    kernels = [
+        kernel
+        for kernel in kernels
+        if kernel.collective in IMPLICIT_SYNC or kernel.collective == "unknown"
+    ]
 
     kernel_ranks = set(_collect_ranks(kernels))
     missing_kernel_ranks = sorted(set(traces) - kernel_ranks)

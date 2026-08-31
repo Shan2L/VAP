@@ -6,16 +6,21 @@
     "distributed_cfg": {
         "enable": true,
         "ray_port": 6379,
-        "worker_nodes": ["cse-ai-10.amd.com", "cse-ai-11.amd.com"]
+        "worker_nodes": ["cse-ai-10.amd.com", "cse-ai-11.amd.com"],
+        "sshkey_path": "/home/DomainUsers/syliu/.ssh/id_ed25519"
     },
     "clock_probe_cfg": {
         "enabled": false,
         "apply_clc_on_warning": false,
-        "mode": "software",
+        "mode": "hardware",
         "required": false,
         "ray_address": "auto",
         "port": 31990,
-        "interval_ms": 100.0
+        "interval_ms": 100.0,
+        "hardware_interval_ms": 50.0,
+        "hardware_interface": null,
+        "hardware_phc_device": null,
+        "hardware_ptp_logs": {}
     },
     "container_cfg": {
         "image_name": "rocm/vllm",
@@ -56,6 +61,7 @@
         "-pp": 2
     },
     "profiler_cfg": {
+        "enable": true,
         "profiler": "torch",
         "torch_profiler_dir": "/app/VAP/log/vllm-profile",
         "torch_profiler_record_shapes": true,

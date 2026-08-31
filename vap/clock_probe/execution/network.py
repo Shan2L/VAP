@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import fcntl
 import ipaddress
 import json
+import socket
+import struct
 import subprocess
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Sequence
+
+SIOCGIFADDR = 0x8915
+SIOCGIFNETMASK = 0x891B
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,17 @@ def parse_interface_records(
 
 def list_network_interfaces() -> list[NetworkInterface]:
     """Inspect local IPv4 addresses and software timestamp support."""
+    records = _ip_address_records()
+    if records is None:
+        records = _sysfs_address_records()
+    capabilities = {
+        str(record["ifname"]): _ethtool_capabilities(str(record["ifname"]))
+        for record in records
+    }
+    return parse_interface_records(records, capabilities)
+
+
+def _ip_address_records() -> list[dict[str, Any]] | None:
     try:
         result = subprocess.run(
             ["ip", "-j", "address", "show"],
@@ -122,15 +140,82 @@ def list_network_interfaces() -> list[NetworkInterface]:
         FileNotFoundError,
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
-    ) as error:
-        raise RuntimeError(f"Unable to inspect Linux interfaces: {error!r}") from error
+    ):
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list):
+        return None
+    return payload
 
-    records = json.loads(result.stdout)
-    capabilities = {
-        str(record["ifname"]): _ethtool_capabilities(str(record["ifname"]))
-        for record in records
-    }
-    return parse_interface_records(records, capabilities)
+
+def _sysfs_address_records() -> list[dict[str, Any]]:
+    """Build ``ip -j address`` shaped records without iproute2."""
+    records: list[dict[str, Any]] = []
+    try:
+        names = socket.if_nameindex()
+    except OSError as error:
+        raise RuntimeError(f"Unable to inspect Linux interfaces: {error!r}") from error
+    for index, name in names:
+        records.append(
+            {
+                "ifname": name,
+                "ifindex": int(index),
+                "flags": _sysfs_flags(name),
+                "addr_info": _ioctl_addr_info(name),
+            }
+        )
+    return records
+
+
+def _sysfs_flags(name: str) -> list[str]:
+    flags: list[str] = []
+    try:
+        value = int((Path("/sys/class/net") / name / "flags").read_text(), 16)
+    except (OSError, ValueError):
+        return flags
+    if value & 0x1:
+        flags.append("UP")
+    if value & 0x8:
+        flags.append("LOOPBACK")
+    if value & 0x40:
+        flags.append("RUNNING")
+    return flags
+
+
+def _ioctl_addr_info(name: str) -> list[dict[str, Any]]:
+    request = struct.pack("256s", name.encode()[:15])
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        try:
+            addr_raw = fcntl.ioctl(sock.fileno(), SIOCGIFADDR, request)
+            mask_raw = fcntl.ioctl(sock.fileno(), SIOCGIFNETMASK, request)
+        except OSError:
+            return []
+        address = socket.inet_ntoa(addr_raw[20:24])
+        netmask = socket.inet_ntoa(mask_raw[20:24])
+        prefix_length = ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
+        return [
+            {
+                "family": "inet",
+                "local": address,
+                "prefixlen": prefix_length,
+                "scope": _ipv4_scope(address),
+            }
+        ]
+    finally:
+        sock.close()
+
+
+def _ipv4_scope(address: str) -> str:
+    parsed = ipaddress.ip_address(address)
+    if parsed.is_loopback:
+        return "host"
+    if parsed.is_link_local:
+        return "link"
+    return "global"
 
 
 def reference_candidates(
@@ -226,8 +311,9 @@ def route_to(
             timeout=5,
         )
         records = json.loads(result.stdout)
+    except FileNotFoundError:
+        return _route_to_via_socket(destination, interfaces)
     except (
-        FileNotFoundError,
         json.JSONDecodeError,
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
@@ -245,12 +331,62 @@ def route_to(
             "reason": "route lookup returned no route",
         }
     route = records[0]
-    interface_name = route.get("dev")
+    return _describe_route(
+        destination,
+        interfaces,
+        interface_name=route.get("dev"),
+        source_address=route.get("prefsrc") or route.get("src"),
+        gateway=route.get("gateway"),
+    )
+
+
+def _route_to_via_socket(
+    destination: str,
+    interfaces: Sequence[NetworkInterface],
+) -> dict[str, Any]:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect((destination, 1))
+            source_address = sock.getsockname()[0]
+        finally:
+            sock.close()
+    except OSError as error:
+        return {
+            "destination": destination,
+            "usable": False,
+            "reason": f"route lookup failed: {error!r}",
+        }
+    interface = next(
+        (
+            candidate
+            for candidate in interfaces
+            if source_address
+            in {address.address for address in candidate.ipv4_addresses}
+        ),
+        None,
+    )
+    return _describe_route(
+        destination,
+        interfaces,
+        interface_name=None if interface is None else interface.name,
+        source_address=source_address,
+        gateway=None,
+    )
+
+
+def _describe_route(
+    destination: str,
+    interfaces: Sequence[NetworkInterface],
+    *,
+    interface_name: str | None,
+    source_address: str | None,
+    gateway: str | None,
+) -> dict[str, Any]:
     interface = next(
         (candidate for candidate in interfaces if candidate.name == interface_name),
         None,
     )
-    source_address = route.get("prefsrc") or route.get("src")
     if interface is None:
         reason = f"route uses unknown interface {interface_name!r}"
     elif not interface.is_up:
@@ -275,6 +411,6 @@ def route_to(
         "usable": reason is None,
         "interface": interface_name,
         "source_address": source_address,
-        "gateway": route.get("gateway"),
+        "gateway": gateway,
         "reason": reason,
     }

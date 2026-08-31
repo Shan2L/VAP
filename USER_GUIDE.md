@@ -12,14 +12,14 @@ the VAP Agent.
 
 A complete run performs the following steps in order:
 
-1. Validate the configuration, ports, model directories, Docker image, devices, and mounts.
+1. Validate the configuration, ports, model directories, Docker images, devices, mounts, worker SSH, and Clock Probe hardware PHC capability.
 2. Start the vLLM Docker container using the host network.
 3. Wait for the vLLM `/health` endpoint to become ready.
-4. Call `/start_profile` to start the profiler.
+4. If `profiler_cfg.enable` is true, call `/start_profile`.
 5. Run `vllm bench serve` in the container.
-6. Call `/stop_profile` to stop the profiler.
+6. If profiling was started, call `/stop_profile`.
 7. Stop and remove the vLLM container for this run.
-8. Merge multi-rank JSON traces, then start TensorBoard and the Perfetto Trace Processor.
+8. If profiling was enabled, merge multi-rank JSON traces, then start TensorBoard and the Perfetto Trace Processor.
 
 ```mermaid
 flowchart TD
@@ -27,11 +27,17 @@ flowchart TD
     Validate -->|"Needs changes"| Configure
     Validate -->|"Ready"| Deploy["Start vLLM container"]
     Deploy --> Health["Wait for health endpoint"]
-    Health --> Profile["Start Torch Profiler"]
+    Health --> Profiler{"Profiler enabled?"}
+    Profiler -->|Yes| Profile["Start Torch Profiler"]
     Profile --> Benchmark["Run benchmark"]
-    Benchmark --> StopProfile["Stop profiler and container"]
-    StopProfile --> Artifacts["Save logs and trace artifacts"]
-    Artifacts --> Inspect["Inspect in TensorBoard or Perfetto"]
+    Profiler -->|No| Benchmark
+    Benchmark --> StopProfile{"Profiler active?"}
+    StopProfile -->|Yes| Stop["Stop profiler"]
+    Stop --> Cleanup["Stop container"]
+    StopProfile -->|No| Cleanup
+    Cleanup --> Artifacts{"Profiler enabled?"}
+    Artifacts -->|Yes| Inspect["Inspect in TensorBoard or Perfetto"]
+    Artifacts -->|No| Done["Benchmark logs only"]
 ```
 
 VAP supports both Web UI and CLI workflows. New users should start with the Web UI.
@@ -218,16 +224,38 @@ The model root directory is automatically mounted in the container at `/tmp/vap/
 
 ### 5.2 `distributed_cfg`
 
-Distributed execution is not currently implemented. The field may remain in the
-configuration for future use, but VAP displays a warning and ignores it during
-the current local run.
+Enable this block for multi-node vLLM profiling. `worker_nodes` are SSH
+hostnames. Optional `sshkey_path` is used by pre-run worker checks.
 
 ```json
-"distributed_cfg": null
+"distributed_cfg": {
+    "enable": true,
+    "ray_port": 6379,
+    "worker_nodes": ["worker-a.example.com", "worker-b.example.com"],
+    "sshkey_path": "/home/user/.ssh/id_ed25519"
+}
 ```
 
-If worker nodes or a Ray configuration are provided, the UI and CLI explicitly
-reject the configuration instead of silently falling back to single-node execution.
+### 5.2.1 `clock_probe_cfg`
+
+Clock Probe is optional and only runs when distributed mode is enabled. The
+default mode is `hardware`. Interface and PHC fields are optional preferences;
+before each run, Validate checks every node for a NIC with hardware TX/RX/raw
+timestamping and a readable `/dev/ptpN`. Leave the fields empty to auto-detect
+per node. `software` skips that hardware scan. `auto` tries hardware first and
+falls back if a node cannot use a PHC.
+
+Hardware mode starts a `ptp4l` sidecar on each node before Clock Probe and
+stops it after the workload. Logs are written under the run directory with a
+per-run UUID; you do not set `hardware_ptp_logs`. The first configured Ray
+worker is the PTP grandmaster; the Ray head and all remaining workers are
+slaves. VAP binds Clock Probe sampling to the exact NIC/PHC selected for each
+sidecar and verifies that all slaves selected that grandmaster.
+
+If the image does not provide `ptp4l`, VAP installs the distribution's
+`linuxptp` package with `apt` on supported Debian/Ubuntu amd64 or arm64 images.
+Other distributions and architectures fail with an explicit error. Do not run
+`phc2sys`.
 
 ### 5.3 `container_cfg`
 
@@ -316,8 +344,11 @@ container. Include it only when the model source is trusted:
 ### 5.5 `profiler_cfg`
 
 Unlike the two vLLM argument maps, `profiler_cfg` is a fixed, typed VAP
-configuration section. Unknown fields are rejected.
+configuration section. Unknown fields are rejected. Profiling is optional and
+independent of benchmark: set `enable` to `false` to run `vllm bench serve`
+without Torch Profiler, traces, TensorBoard, or Perfetto.
 
+- `enable`: Start and stop the vLLM profiler around the benchmark. Defaults to `true`.
 - `profiler`: Usually set to `torch`.
 - `torch_profiler_dir`: Profiler output directory inside the container.
 - `torch_profiler_record_shapes`: Records tensor shapes.
@@ -327,7 +358,7 @@ configuration section. Unknown fields are rejected.
 - `torch_profiler_use_gzip`: Compresses the trace.
 - `delay_iterations`: Number of iterations to wait before collection starts.
 - `max_iterations`: Maximum number of iterations to collect.
-- `tensorboard_port`: TensorBoard listening port; defaults to `6006`.
+- `tensorboard_port`: TensorBoard listening port; defaults to `6006`. Only checked when profiling is enabled.
 
 Collecting stacks, memory events, and shapes increases trace size and runtime
 overhead. Enable these options as needed for the issue being investigated.
@@ -627,8 +658,9 @@ VAP does not ignore spelling errors. Compare the configuration with
 
 ### `Distributed runs are not supported yet`
 
-VAP currently ignores `distributed_cfg` and continues in local mode. Set it to
-`null` to hide the warning.
+This message is obsolete. Distributed runs are supported when
+`distributed_cfg.enable` is true. Worker SSH host keys must already be in
+`known_hosts`, and each worker Docker daemon must be reachable.
 
 ### Docker Image Does Not Exist
 

@@ -61,6 +61,12 @@ def clean(log_dir: str):
         print(f"{target} does not exist; nothing to clean")
 
 
+class _RunInterrupted(BaseException):
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
 def run(args, log_dir: str):
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(log_dir, date_str)
@@ -83,14 +89,34 @@ def run(args, log_dir: str):
         visualization_host=args.visualization_host,
     )
 
-    def signal_handler(signum, frame):
-        run_logger.info("Signal %s received. Cleaning up...", signum)
-        pipeline.cleanup()
-        raise SystemExit(128 + signum)
+    def signal_handler(signum, _frame):
+        raise _RunInterrupted(signum)
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    pipeline.run_pipeline()
+    previous_sigint = signal.signal(signal.SIGINT, signal_handler)
+    previous_sigterm = signal.signal(signal.SIGTERM, signal_handler)
+    try:
+        pipeline.run_pipeline()
+    except _RunInterrupted as interrupted:
+        # Cleanup runs through the pipeline's normal finally path. Restore the
+        # default handlers so a second stop request can terminate a stuck
+        # Docker/SSH cleanup instead of being ignored forever.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        run_logger.info(
+            "Signal %s received; normal pipeline cleanup requested",
+            interrupted.signum,
+        )
+        try:
+            pipeline.cleanup()
+        except Exception:
+            run_logger.exception(
+                "Cleanup failed after signal %s",
+                interrupted.signum,
+            )
+        raise SystemExit(128 + interrupted.signum) from None
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def main(argv: list[str] | None = None) -> None:

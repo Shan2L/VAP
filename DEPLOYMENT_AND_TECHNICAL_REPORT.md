@@ -227,8 +227,10 @@ After `example-config.json` is modified, the frontend retrieves the latest defau
 
 - Fixed, typed VAP section for Torch Profiler enablement and collection
   parameters; unknown fields are rejected.
+- `enable` (default `true`) starts and stops profiling independently of benchmark.
 - `torch_profiler_dir` is fixed at `/app/VAP/log/vllm-profile`.
-- `tensorboard_port` configures the TensorBoard port.
+- `tensorboard_port` configures the TensorBoard port and is only required when
+  profiling is enabled.
 
 `container_cfg`
 
@@ -237,10 +239,12 @@ After `example-config.json` is modified, the frontend retrieves the latest defau
 
 `distributed_cfg`
 
-- Currently reserved for future distributed support;
-- Displays a yellow warning at this stage;
-- Ray ports and remote nodes are not used;
-- VAP continues to run in local, single-host mode.
+- Enables multi-node vLLM profiling with a local Ray head and one Docker
+  container per SSH worker;
+- Optional `sshkey_path` is used by worker Docker and Clock Probe checks;
+- Clock Probe hardware mode uses the first configured Ray worker as PTP
+  grandmaster and binds each node's sampler to the NIC/PHC selected for its
+  `ptp4l` sidecar.
 
 ### 5.3 Configuration Validation
 
@@ -563,12 +567,12 @@ This design prevents the Web UI from directly overwriting the user's configurati
 5. The Workflow checks ports, the model, the image, and devices.
 6. The Docker SDK starts the vLLM container.
 7. The Workflow polls the vLLM `/health` endpoint.
-8. The Workflow calls `/start_profile`.
-9. `vllm bench serve` runs inside the container.
-10. The Workflow calls `/stop_profile` from a `finally` block.
+8. If `profiler_cfg.enable` is true, the Profiler lifecycle calls `/start_profile`.
+9. The Benchmark lifecycle runs `vllm bench serve` inside the container.
+10. If profiling was started, `/stop_profile` runs from a `finally` block.
 11. The Workflow stops and removes the container.
-12. Trace Fusion merges traces from multiple ranks.
-13. TensorBoard and the Perfetto Trace Processor are started.
+12. If profiling was enabled, Trace Fusion merges traces from multiple ranks.
+13. If profiling was enabled, TensorBoard and the Perfetto Trace Processor are started.
 
 ```mermaid
 sequenceDiagram
@@ -689,7 +693,10 @@ At the time of writing, all 26 tests pass.
 ## 10. Known Limitations
 
 - The automated installer supports only Linux x86_64.
-- Distributed execution is not yet implemented. `distributed_cfg` only displays a warning, and execution proceeds in local mode.
+- Distributed execution requires worker SSH host keys in `known_hosts` and a
+  reachable Docker daemon on each worker. Hardware Clock Probe starts `ptp4l`
+  sidecars at run time. Supported Debian/Ubuntu amd64 and arm64 images install
+  `linuxptp` with `apt` when `ptp4l` is absent; other platforms fail explicitly.
 - VAP uses a privileged Docker configuration and must not run untrusted images or models.
 - `--trust-remote-code` executes code from the model repository.
 - The Web Server does not provide TLS and must not be exposed directly to the public internet.

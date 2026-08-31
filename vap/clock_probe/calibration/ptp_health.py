@@ -10,26 +10,56 @@ from typing import Any, Sequence
 
 from .core import percentile as _percentile
 
+# linuxptp 4.0 uses `%+d` / `%+6d`, so freq is `+7257` not `-7257`.
+_SIGNED_INT = r"[+-]?\d+"
 SUMMARY_RE = re.compile(
     r"ptp4l\[(?P<mono>[0-9.]+)\]:\s+"
-    r"rms\s+(?P<rms>-?\d+)\s+max\s+(?P<max>-?\d+)\s+"
-    r"freq\s+(?P<freq>-?\d+)\s+\+/-\s+(?P<freq_dev>\d+)"
-    r"(?:\s+delay\s+(?P<delay>\d+)\s+\+/-\s+(?P<delay_dev>\d+))?"
+    rf"rms\s+(?P<rms>{_SIGNED_INT})\s+max\s+(?P<max>{_SIGNED_INT})\s+"
+    rf"freq\s+(?P<freq>{_SIGNED_INT})\s+\+/-\s+(?P<freq_dev>\d+)"
+    rf"(?:\s+delay\s+(?P<delay>{_SIGNED_INT})\s+\+/-\s+(?P<delay_dev>\d+))?"
+)
+OFFSET_RE = re.compile(
+    r"ptp4l\[(?P<mono>[0-9.]+)\]:\s+"
+    rf"master offset\s+(?P<offset>{_SIGNED_INT})\s+s(?P<servo>\d+)\s+"
+    rf"freq\s+(?P<freq>{_SIGNED_INT})\s+path delay\s+(?P<delay>{_SIGNED_INT})"
 )
 STATE_RE = re.compile(
     r"ptp4l\[(?P<mono>[0-9.]+)\]:\s+port \d+ \((?P<iface>[^/)][^)]*)\): "
-    r"\S+ to (?P<state>MASTER|SLAVE|LISTENING|UNCALIBRATED|FAULTY|DISABLED)"
+    r"\S+ to (?P<state>GRAND_MASTER|MASTER|SLAVE|LISTENING|UNCALIBRATED|FAULTY|DISABLED|PASSIVE)"
 )
 GM_FOREIGN_RE = re.compile(r"selected best master clock (?P<clock_id>[0-9a-fA-F.]+)")
 GM_LOCAL_RE = re.compile(
     r"selected local clock (?P<clock_id>[0-9a-fA-F.]+) as best master"
 )
+NEW_FOREIGN_RE = re.compile(r"new foreign master (?P<clock_id>[0-9a-fA-F.]+)")
 CLOCKCHECK_RE = re.compile(
     r"ptp4l\[(?P<mono>[0-9.]+)\]:\s+clockcheck: clock frequency changed unexpectedly"
 )
 ASSUMING_GM_RE = re.compile(r"assuming the grand master role")
+VAP_LOCAL_CLOCK_RE = re.compile(r"vap ptp local-clock-id (?P<clock_id>[0-9a-fA-F.]+)")
 
-ALLOWED_STATES = {"MASTER", "SLAVE"}
+
+def clock_identity_from_mac(mac: str | None) -> str | None:
+    """IEEE 1588 clock identity: insert ff:fe into the EUI-48 MAC."""
+    hexpart = re.sub(r"[^0-9a-fA-F]", "", str(mac or ""))
+    if len(hexpart) != 12:
+        return None
+    lower = hexpart.lower()
+    return f"{lower[:6]}.fffe.{lower[6:]}"
+
+
+ALLOWED_STATES = {"MASTER", "GRAND_MASTER", "SLAVE"}
+GM_STATES = {"MASTER", "GRAND_MASTER"}
+SLAVE_STATES = {"SLAVE"}
+
+
+def ptp_role_from_state(state: str | None) -> str | None:
+    """Map a ptp4l port state to the GM or slave role used by health checks."""
+    if state in GM_STATES:
+        return "master"
+    if state in SLAVE_STATES:
+        return "slave"
+    return None
 
 
 @dataclass
@@ -71,7 +101,11 @@ class PtpHealth:  # pylint: disable=too-many-instance-attributes
 def parse_ptp4l_log(text: str) -> dict[str, Any]:
     """Extract port state, GM identity, and offset summaries from a ptp4l log."""
     states = [
-        {"monotonic_s": float(match.group("mono")), "state": match.group("state")}
+        {
+            "monotonic_s": float(match.group("mono")),
+            "state": match.group("state"),
+            "interface": match.group("iface"),
+        }
         for match in STATE_RE.finditer(text)
     ]
     summaries: list[PtpSummarySample] = []
@@ -80,15 +114,32 @@ def parse_ptp4l_log(text: str) -> dict[str, Any]:
         summaries.append(
             PtpSummarySample(
                 monotonic_s=float(match.group("mono")),
-                rms_ns=int(match.group("rms")),
-                max_ns=int(match.group("max")),
+                rms_ns=abs(int(match.group("rms"))),
+                max_ns=abs(int(match.group("max"))),
                 freq_ppb=int(match.group("freq")),
                 delay_ns=int(delay) if delay is not None else None,
             )
         )
+    if not summaries:
+        for match in OFFSET_RE.finditer(text):
+            offset = abs(int(match.group("offset")))
+            summaries.append(
+                PtpSummarySample(
+                    monotonic_s=float(match.group("mono")),
+                    rms_ns=offset,
+                    max_ns=offset,
+                    freq_ppb=int(match.group("freq")),
+                    delay_ns=int(match.group("delay")),
+                )
+            )
     clockchecks = [float(match.group("mono")) for match in CLOCKCHECK_RE.finditer(text)]
     gm_ids = [match.group("clock_id") for match in GM_FOREIGN_RE.finditer(text)]
     local_ids = [match.group("clock_id") for match in GM_LOCAL_RE.finditer(text)]
+    local_ids.extend(
+        match.group("clock_id") for match in VAP_LOCAL_CLOCK_RE.finditer(text)
+    )
+    if not gm_ids:
+        gm_ids = [match.group("clock_id") for match in NEW_FOREIGN_RE.finditer(text)]
     return {
         "states": states,
         "summaries": summaries,
@@ -107,13 +158,22 @@ def evaluate_ptp_health(  # pylint: disable=too-many-locals,too-many-branches,to
     settle_summaries: int = 10,
     late_clockcheck_window_s: float = 10.0,
 ) -> PtpHealth:
-    """Fail closed unless the log ends in a locked MASTER or SLAVE state."""
+    """Fail closed unless the log ends in a locked MASTER, GRAND_MASTER, or SLAVE state."""
     if role not in {"master", "slave"}:
         raise ValueError("PTP role must be 'master' or 'slave'")
     parsed = parse_ptp4l_log(text)
     reasons: list[str] = []
     port_state = parsed["states"][-1]["state"] if parsed["states"] else None
     summaries: list[PtpSummarySample] = parsed["summaries"]
+    if role == "slave":
+        lock_mono = None
+        for state in parsed["states"]:
+            if state["state"] == "SLAVE":
+                lock_mono = state["monotonic_s"]
+        if lock_mono is not None:
+            summaries = [
+                sample for sample in summaries if sample.monotonic_s >= lock_mono
+            ]
     settled = (
         summaries[settle_summaries:] if len(summaries) > settle_summaries else summaries
     )
@@ -136,18 +196,22 @@ def evaluate_ptp_health(  # pylint: disable=too-many-locals,too-many-branches,to
             grandmaster_clock_id = parsed["foreign_master_ids"][-1]
     elif parsed["local_clock_ids"]:
         grandmaster_clock_id = parsed["local_clock_ids"][-1]
-    elif parsed["foreign_master_ids"]:
-        grandmaster_clock_id = parsed["foreign_master_ids"][-1]
+    elif port_state not in GM_STATES:
+        # linuxptp 4.0 GM logs "selected best master clock <foreign>" then
+        # assumes GM. That foreign id is not our clock identity.
+        if parsed["foreign_master_ids"]:
+            grandmaster_clock_id = parsed["foreign_master_ids"][-1]
 
-    expected_state = "MASTER" if role == "master" else "SLAVE"
-    if port_state != expected_state:
+    expected_states = GM_STATES if role == "master" else SLAVE_STATES
+    if port_state not in expected_states:
         reasons.append(
-            f"port_state is {port_state!r}, expected {expected_state} for role {role}"
+            f"port_state is {port_state!r}, expected "
+            f"{' or '.join(sorted(expected_states))} for role {role}"
         )
     if (
         role == "master"
         and not parsed["assuming_grandmaster"]
-        and port_state != "MASTER"
+        and port_state not in GM_STATES
     ):
         reasons.append("master log never assumed the grand master role")
     if role == "slave" and grandmaster_clock_id is None:

@@ -153,13 +153,15 @@ any option supported by the vLLM version in the selected image through the UI
 key/value editor. VAP validates safe command construction, while vLLM validates
 the option semantics.
 
-`profiler_cfg.tensorboard_port` controls TensorBoard. Perfetto Trace Processor
+`profiler_cfg.enable` (default `true`) starts Torch Profiler independently of
+benchmark. `profiler_cfg.tensorboard_port` controls TensorBoard when profiling
+is enabled. Perfetto Trace Processor
 uses local port `9001`. If that optional port is unavailable, validation shows a
 warning, profiling continues, and only automatic Perfetto visualization is
 skipped. Clicking the Perfetto button then offers a direct trace download and a
 link to `https://ui.perfetto.dev/` for manual import.
 
-Configuration is strict: unknown fields, invalid ports, mismatched deploy/benchmark endpoints, and unsafe CLI values are rejected by both the UI and CLI. Distributed execution is not implemented yet; a present `distributed_cfg` produces a warning and VAP continues in local mode.
+Configuration is strict: unknown fields, invalid ports, mismatched deploy/benchmark endpoints, and unsafe CLI values are rejected by both the UI and CLI. Distributed runs use `distributed_cfg.enable` plus worker SSH. Clock Probe defaults to hardware mode. At run time the first configured Ray worker is the PTP grandmaster; the Ray head and remaining workers are slaves. Each Clock Probe actor is bound to the exact NIC/PHC selected for its `ptp4l` sidecar.
 
 VAP safely quotes deploy, benchmark, and profiler arguments before invoking the fixed shell wrapper used for log redirection.
 

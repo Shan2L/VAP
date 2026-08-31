@@ -15,8 +15,15 @@ from vap.runners.assistants.process import (
     DockerCommandExecutor,
     ProcessAssistant,
 )
-from vap.runners.base import CommandResult
-from vap.runners.docker import create_docker_client
+from vap.runners.base import CommandResult, ProcessHandle
+from vap.runners.docker import (
+    DEFAULT_DOCKER_TIMEOUT_SECONDS,
+    VAP_KIND_LABEL,
+    VAP_MANAGED_LABEL,
+    VAP_RUN_LABEL,
+    create_docker_client,
+    sweep_vap_containers,
+)
 
 
 def network_payload() -> bytes:
@@ -107,8 +114,14 @@ class ProcessAssistantTests(unittest.TestCase):
         status = assistant.status(handle)
 
         self.assertEqual(handle.exec_id, "exec-id")
+        self.assertTrue(handle.pid_file.startswith("/tmp/vap-proc-"))
         self.assertTrue(status.running)
         self.assertEqual(status.pid, 123)
+        created_command = container.client.api.exec_create.call_args.args[1]
+        self.assertEqual(created_command[0], "/bin/bash")
+        self.assertIn("echo $$", created_command[2])
+        self.assertIn("sleep", created_command)
+        self.assertIn("infinity", created_command)
         container.client.api.exec_start.assert_called_once_with(
             "exec-id",
             detach=True,
@@ -117,22 +130,37 @@ class ProcessAssistantTests(unittest.TestCase):
     def test_managed_process_can_be_terminated(self) -> None:
         container = Mock(id="container-id")
         container.client.api.exec_inspect.side_effect = [
-            {"Running": True, "ExitCode": None, "Pid": 123},
+            {"Running": True, "ExitCode": None, "Pid": 999999},
             {"Running": False, "ExitCode": 143, "Pid": 0},
         ]
-        container.exec_run.return_value = (0, b"")
+        container.exec_run.side_effect = [
+            (0, b"42\n"),
+            (0, b""),
+        ]
         assistant = ProcessAssistant(DockerCommandExecutor(container))
 
         status = assistant.terminate(
-            Mock(exec_id="exec-id", command=("vllm",)),
+            ProcessHandle(
+                exec_id="exec-id",
+                command=("vllm",),
+                pid_file="/tmp/vap-proc-test.pid",
+            )
         )
 
         self.assertFalse(status.running)
         self.assertEqual(status.exit_code, 143)
         self.assertEqual(
-            container.exec_run.call_args.args[0],
-            ["kill", "-TERM", "123"],
+            container.exec_run.call_args_list[0].args[0],
+            ["cat", "/tmp/vap-proc-test.pid"],
         )
+        kill_command = container.exec_run.call_args_list[1].args[0]
+        self.assertEqual(kill_command[0], "python3")
+        self.assertEqual(kill_command[-2:], ["42", "15"])
+
+    def test_terminate_waits_one_minute_before_giving_up(self) -> None:
+        from vap.runners.assistants.process import TERMINATE_GRACE_SEC
+
+        self.assertEqual(TERMINATE_GRACE_SEC, 60.0)
 
 
 class FileAssistantTests(unittest.TestCase):
@@ -242,6 +270,41 @@ class NetworkAssistantTests(unittest.TestCase):
         )
         self.assertEqual(len(network.ptp_interfaces()), 4)
 
+    def test_ensure_inventory_probes_once_when_cache_is_empty(self) -> None:
+        executor = Mock()
+        executor.run.return_value = CommandResult(0, stdout=network_payload())
+        network = NetworkAssistant(executor, "node-1", auto_refresh=False)
+
+        self.assertFalse(network.has_inventory)
+        first = network.ensure_inventory()
+        second = network.ensure_inventory()
+
+        self.assertTrue(network.has_inventory)
+        self.assertEqual(len(first), 4)
+        self.assertEqual(first, second)
+        self.assertEqual(executor.run.call_count, 1)
+
+    def test_select_ptp_interface_prefers_fastest_up_ethernet_with_phc(self) -> None:
+        executor = Mock()
+        executor.run.return_value = CommandResult(0, stdout=network_payload())
+        network = NetworkAssistant(executor, "node-1", auto_refresh=False)
+
+        selected = network.select_ptp_interface()
+
+        self.assertEqual(selected.name, "enp196s0f1np1")
+        self.assertEqual(selected.ptp_device, "/dev/ptp3")
+        self.assertEqual(executor.run.call_count, 1)
+
+    def test_select_ptp_interface_honors_preferred_interface(self) -> None:
+        executor = Mock()
+        executor.run.return_value = CommandResult(0, stdout=network_payload())
+        network = NetworkAssistant(executor, "node-1")
+
+        selected = network.select_ptp_interface(preferred_interface="enp4s0f0np0")
+
+        self.assertEqual(selected.name, "enp4s0f0np0")
+        self.assertEqual(selected.ptp_device, "/dev/ptp0")
+
     def test_ip_selection_refreshes_inventory_and_uses_private_candidate(self) -> None:
         executor = Mock()
         executor.run.side_effect = [
@@ -268,6 +331,7 @@ class DockerRunnerTests(unittest.TestCase):
         client.assert_called_once_with(
             base_url="ssh://worker.example",
             use_ssh_client=True,
+            timeout=DEFAULT_DOCKER_TIMEOUT_SECONDS,
         )
 
     def test_runner_composes_assistants_and_cleans_up(self) -> None:
@@ -301,9 +365,111 @@ class DockerRunnerTests(unittest.TestCase):
             {"/remote/logs": {"bind": "/app/VAP/log", "mode": "rw"}},
         )
         runner.cleanup()
-        container.stop.assert_called_once()
-        container.remove.assert_called_once()
+        container.stop.assert_not_called()
+        container.remove.assert_called_once_with(force=True)
+        client.close.assert_called_once()
         self.assertFalse(runner.is_started)
+
+    def test_start_raises_if_container_exits_immediately(self) -> None:
+        client = Mock()
+        container = Mock(id="dead-id", status="exited")
+        container.logs.return_value = b"ptp4l is not installed in this image\n"
+        client.containers.run.return_value = container
+        runner = DockerRunner(client=client)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"not running \(status=exited\).*ptp4l is not installed",
+        ):
+            runner.start(ContainerSpec(image="example/image:tag", name="vap-ptp4l"))
+
+        container.exec_run.assert_not_called()
+        container.remove.assert_called_once_with(force=True)
+        self.assertFalse(runner.is_started)
+
+    def test_runner_cleanup_force_removes_without_blocking_stop(self) -> None:
+        client = Mock()
+        container = Mock(id="container-id")
+        client.containers.run.return_value = container
+        runner = DockerRunner(client=client, auto_network_refresh=False)
+        runner.start(ContainerSpec(image="example/image:tag", name="vap-test"))
+
+        runner.cleanup()
+
+        container.stop.assert_not_called()
+        container.remove.assert_called_once_with(force=True)
+        client.close.assert_called_once()
+        self.assertFalse(runner.is_started)
+
+    def test_sweep_vap_containers_removes_only_managed_labels(self) -> None:
+        leftover = Mock()
+        leftover.name = (
+            "/vap_deepseek-ai_DeepSeek-R1-Distill-Llama-70B__20260829_220044"
+        )
+        leftover.labels = {VAP_MANAGED_LABEL: "true"}
+        sidecar = Mock()
+        sidecar.name = "vap_ptp4l_20260829_cse-ai-9_58584e9d"
+        sidecar.labels = {VAP_MANAGED_LABEL: "true"}
+        other = Mock()
+        other.name = "vap_unlabeled"
+        other.labels = {}
+        client = Mock()
+        client.containers.list.return_value = [leftover, sidecar, other]
+        with patch("vap.runners.docker.create_docker_client", return_value=client):
+            sweep_vap_containers(DockerTarget())
+        leftover.remove.assert_called_once_with(force=True)
+        sidecar.remove.assert_called_once_with(force=True)
+        other.remove.assert_not_called()
+        client.containers.list.assert_called_once_with(
+            all=True,
+            filters={"label": f"{VAP_MANAGED_LABEL}=true"},
+        )
+        client.close.assert_called_once()
+
+    def test_sweep_preserves_containers_for_an_active_run(self) -> None:
+        active_runner = Mock(status="running")
+        active_runner.name = "vap_active_runner"
+        active_runner.labels = {
+            VAP_MANAGED_LABEL: "true",
+            VAP_RUN_LABEL: "active",
+            VAP_KIND_LABEL: "runner",
+        }
+        active_sidecar = Mock(status="running")
+        active_sidecar.name = "vap_active_ptp4l"
+        active_sidecar.labels = {
+            VAP_MANAGED_LABEL: "true",
+            VAP_RUN_LABEL: "active",
+            VAP_KIND_LABEL: "ptp4l",
+        }
+        orphan = Mock(status="exited")
+        orphan.name = "vap_old_runner"
+        orphan.labels = {
+            VAP_MANAGED_LABEL: "true",
+            VAP_RUN_LABEL: "old",
+            VAP_KIND_LABEL: "runner",
+        }
+        client = Mock()
+        client.containers.list.return_value = [
+            active_runner,
+            active_sidecar,
+            orphan,
+        ]
+
+        with patch("vap.runners.docker.create_docker_client", return_value=client):
+            sweep_vap_containers(DockerTarget())
+
+        active_runner.remove.assert_not_called()
+        active_sidecar.remove.assert_not_called()
+        orphan.remove.assert_called_once_with(force=True)
+
+    def test_missing_ssh_identity_is_ignored(self) -> None:
+        from vap.runners.ssh_identity import resolve_ssh_identity
+
+        self.assertIsNone(resolve_ssh_identity("/missing/id_ed25519"))
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "id_ed25519"
+            key.write_text("dummy", encoding="utf-8")
+            self.assertEqual(resolve_ssh_identity(str(key)), str(key))
 
 
 if __name__ == "__main__":

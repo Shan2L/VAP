@@ -23,9 +23,14 @@ from vap.server.artifacts import (
 )
 from vap.server.auth import parse_cookie_header, same_origin_allowed
 from vap.server.checks import (
+    check_config_clock_probe,
+    check_config_container_resources,
+    check_config_docker_resources,
     check_config_machines,
+    check_config_model_resources,
     check_config_ports,
     check_config_resources,
+    check_config_worker_docker_resources,
 )
 from vap.server.state import get_run_state_snapshot, start_vap_run, stop_vap_run
 from vap.validation import validate_config_payload
@@ -158,6 +163,11 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             "/api/check-ports": self.handle_check_ports,
             "/api/check-machines": self.handle_check_machines,
             "/api/check-resources": self.handle_check_resources,
+            "/api/check-model-resources": self.handle_check_model_resources,
+            "/api/check-docker-resources": self.handle_check_docker_resources,
+            "/api/check-worker-docker-resources": self.handle_check_worker_docker_resources,
+            "/api/check-container-resources": self.handle_check_container_resources,
+            "/api/check-clock-probe": self.handle_check_clock_probe,
             "/api/run": self.handle_run_start,
             "/api/run/stop": self.handle_run_stop,
             "/api/agent/unlock": self.handle_agent_unlock,
@@ -261,7 +271,12 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         try:
             params = parse_qs(query)
             file_name = params.get("name", [""])[0]
-            self.send_json(read_current_log_file(file_name))
+            self.send_json(
+                read_current_log_file(
+                    file_name,
+                    max_bytes=settings.MAX_STATUS_LOG_BYTES,
+                )
+            )
         except Exception as exc:
             self.send_json(
                 {"message": f"Failed to read log: {exc}"}, HTTPStatus.BAD_REQUEST
@@ -484,6 +499,26 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
     def handle_check_resources(self) -> None:
         payload = self.read_json_body()
         self.send_json(check_config_resources(payload))
+
+    def handle_check_model_resources(self) -> None:
+        payload = self.read_json_body()
+        self.send_json(check_config_model_resources(payload))
+
+    def handle_check_docker_resources(self) -> None:
+        payload = self.read_json_body()
+        self.send_json(check_config_docker_resources(payload))
+
+    def handle_check_worker_docker_resources(self) -> None:
+        payload = self.read_json_body()
+        self.send_json(check_config_worker_docker_resources(payload))
+
+    def handle_check_container_resources(self) -> None:
+        payload = self.read_json_body()
+        self.send_json(check_config_container_resources(payload))
+
+    def handle_check_clock_probe(self) -> None:
+        payload = self.read_json_body()
+        self.send_json(check_config_clock_probe(payload))
 
     def handle_run_start(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
