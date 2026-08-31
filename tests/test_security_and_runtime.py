@@ -762,6 +762,65 @@ class ServerAuthorizationTests(unittest.TestCase):
         self.assertIn("already in progress", second["message"])
         self.assertTrue(second["stop_requested"])
 
+    def test_server_exit_uses_full_cleanup_grace_period(self) -> None:
+        process = Mock()
+        process.pid = 4321
+        process.poll.return_value = None
+        with (
+            patch.object(server_settings, "SHUTDOWN_CLEANUP_DONE", False),
+            patch.dict(
+                server_settings.RUN_STATE,
+                {
+                    "process": process,
+                    "running": True,
+                    "run_dir": None,
+                    "output": "",
+                    "stop_requested": False,
+                },
+            ),
+            patch.object(
+                server_state,
+                "stop_process_group_sync",
+                return_value=True,
+            ) as stop_group,
+            patch.object(server_state, "terminate_recorded_visualization_pids"),
+            patch.object(server_state, "clear_active_run_record") as clear_record,
+        ):
+            server_state.cleanup_active_run_on_server_exit()
+
+        stop_group.assert_called_once_with(
+            process, timeout_sec=server_state.STOP_CLEANUP_GRACE_SEC
+        )
+        clear_record.assert_called_once()
+
+    def test_server_exit_keeps_active_record_when_cleanup_times_out(self) -> None:
+        process = Mock()
+        process.pid = 4321
+        process.poll.return_value = None
+        with (
+            patch.object(server_settings, "SHUTDOWN_CLEANUP_DONE", False),
+            patch.dict(
+                server_settings.RUN_STATE,
+                {
+                    "process": process,
+                    "running": True,
+                    "run_dir": None,
+                    "output": "",
+                    "stop_requested": False,
+                },
+            ),
+            patch.object(
+                server_state,
+                "stop_process_group_sync",
+                return_value=False,
+            ),
+            patch.object(server_state, "terminate_recorded_visualization_pids"),
+            patch.object(server_state, "clear_active_run_record") as clear_record,
+        ):
+            server_state.cleanup_active_run_on_server_exit()
+
+        clear_record.assert_not_called()
+
     def test_agent_cannot_start_with_modified_torch_profiler_dir(self) -> None:
         payload = example_payload()
         payload["profiler_cfg"]["torch_profiler_dir"] = "/tmp/other-profile"

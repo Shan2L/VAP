@@ -469,7 +469,9 @@ def terminate_recorded_visualization_pids(
         pass
 
 
-def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
+def cleanup_active_run_on_server_exit(
+    timeout_sec: float = STOP_CLEANUP_GRACE_SEC,
+) -> None:
     with settings.SHUTDOWN_CLEANUP_LOCK:
         if settings.SHUTDOWN_CLEANUP_DONE:
             return
@@ -504,6 +506,9 @@ def cleanup_active_run_on_server_exit(timeout_sec: float = 8.0) -> None:
     print("Stopping active VAP run before server exits...")
     if not stop_process_group_sync(process, timeout_sec=timeout_sec):
         print("Active VAP run did not stop cleanly before server exit.")
+        # Keep the record so the next server startup can retry orphan recovery.
+        terminate_recorded_visualization_pids(run_dir)
+        return
     terminate_recorded_visualization_pids(run_dir)
     clear_active_run_record()
 
