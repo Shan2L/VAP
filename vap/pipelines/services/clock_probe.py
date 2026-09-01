@@ -55,6 +55,19 @@ class ClockProbeLifecycle:
         return self.local_session_path.is_file()
 
     @property
+    def alignment_ready(self) -> bool:
+        """Return whether the session passed calibration and may align traces."""
+        if not self.has_session:
+            return False
+        try:
+            session = json.loads(
+                self.local_session_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+        return str(session.get("status") or "").upper() == "PASS"
+
+    @property
     def required(self) -> bool:
         return self.config.clock_probe_cfg.required
 
@@ -86,14 +99,10 @@ class ClockProbeLifecycle:
             )
         except Exception as exc:
             message = f"Clock probe failed to start: {exc}"
-            if self.required:
-                raise RuntimeError(message) from exc
             logger.warning(message)
             return
         if result.exit_code != 0:
             message = f"Clock probe failed to start: {result.combined_text.strip()}"
-            if self.required:
-                raise RuntimeError(message)
             logger.warning(message)
             return
         self._active = True
@@ -123,8 +132,6 @@ class ClockProbeLifecycle:
             )
         except Exception as exc:
             message = f"Clock probe failed to stop: {exc}"
-            if self.required:
-                raise RuntimeError(message) from exc
             logger.warning(message)
             return
         finally:
@@ -132,14 +139,10 @@ class ClockProbeLifecycle:
 
         if result.exit_code != 0:
             message = f"Clock probe failed to stop: {result.combined_text.strip()}"
-            if self.required:
-                raise RuntimeError(message)
             logger.warning(message)
             return
         if not self.master_runner.files.is_file(CLOCK_PROBE_SESSION_PATH):
             message = f"Clock probe did not produce {CLOCK_PROBE_SESSION_PATH}"
-            if self.required:
-                raise RuntimeError(message)
             logger.warning(message)
             return
         session_failed = False
@@ -153,17 +156,11 @@ class ClockProbeLifecycle:
                 logger.info("Clock probe fitting summary:\n%s", summary)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             message = f"Cannot summarize clock probe session: {exc}"
-            if self.required:
-                raise RuntimeError(message) from exc
             logger.warning(message)
         logger.info(
             "Clock model session saved to %s",
             self.local_session_path,
         )
-        if session_failed and self.required:
-            raise RuntimeError(
-                "Required Clock Probe calibration failed; see the fitting summary"
-            )
 
     def cleanup(self) -> None:
         if not self._active or not self.master_runner.is_started:

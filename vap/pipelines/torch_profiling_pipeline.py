@@ -208,8 +208,6 @@ class TorchProfilingPipeline(Pipeline):
                             )
                             self.clock_probe.set_ptp_nodes(self.ptp4l.node_descriptors)
                         except Exception as exc:
-                            if self.clock_probe.required:
-                                raise
                             logger.warning(
                                 "ptp4l sidecars failed; continuing without "
                                 "hardware PTP lock: %s",
@@ -244,8 +242,6 @@ class TorchProfilingPipeline(Pipeline):
                     try:
                         self.ptp4l.stop()
                     except Exception as exc:
-                        if self.clock_probe.required and profiling_error is None:
-                            raise
                         if profiling_error is None:
                             logger.warning(
                                 "Optional ptp4l cleanup failed after a successful "
@@ -280,55 +276,7 @@ class TorchProfilingPipeline(Pipeline):
         # 6. Build rank inputs, optionally align, then fuse when needed.
         profile_dir = self.trace_postprocessor.profile_dir
         if distributed:
-            trace_inputs = self.trace_postprocessor.distributed_trace_inputs(
-                profile_dir,
-                self.ray_cluster.runner_node_ids,
-            )
-            traces_to_fuse = {
-                rank: str(trace.path) for rank, trace in trace_inputs.items()
-            }
-            aligned = False
-            raw_fallback = False
-            if self.clock_probe.enabled and self.clock_probe.has_session:
-                try:
-                    traces_to_fuse = self.trace_postprocessor.align_trace_files(
-                        trace_inputs,
-                        profile_dir,
-                        self.clock_probe.local_session_path,
-                    )
-                    aligned = True
-                except AlignmentValidationError as exc:
-                    if self.clock_probe.required:
-                        raise RuntimeError(f"Trace validation failed: {exc}") from exc
-                    raw_fallback = True
-                    logger.warning(
-                        "Clock timestamp mapping completed, but causal validation "
-                        "rejected it; using explicitly marked raw fallback traces. "
-                        "Manifest: %s; reason: %s",
-                        exc.manifest_path,
-                        exc,
-                    )
-                except Exception as exc:
-                    if self.clock_probe.required:
-                        raise RuntimeError(f"Trace alignment failed: {exc}") from exc
-                    raw_fallback = True
-                    logger.warning(
-                        "Trace alignment failed; falling back to raw "
-                        "distributed traces: %s",
-                        exc,
-                    )
-            elif self.clock_probe.enabled:
-                raw_fallback = True
-                logger.warning(
-                    "Clock Probe produced no session; skipping alignment and using "
-                    "explicitly marked raw fallback traces"
-                )
-            trace_path = self.trace_postprocessor.fuse_trace_files(
-                traces_to_fuse,
-                profile_dir,
-                aligned=aligned,
-                raw_fallback=raw_fallback,
-            )
+            trace_path = self._postprocess_distributed_traces(profile_dir)
         else:
             trace_path = self.trace_postprocessor.prepare_single_node_trace(profile_dir)
 
@@ -363,6 +311,57 @@ class TorchProfilingPipeline(Pipeline):
         finally:
             stop_visualizations(visualization_processes.values())
             write_visualization_pids(self.log_path, {})
+
+    def _postprocess_distributed_traces(self, profile_dir: str) -> str:
+        trace_inputs = self.trace_postprocessor.distributed_trace_inputs(
+            profile_dir,
+            self.ray_cluster.runner_node_ids,
+        )
+        traces_to_fuse = {
+            rank: str(trace.path) for rank, trace in trace_inputs.items()
+        }
+        aligned = False
+        raw_fallback = False
+
+        if self.clock_probe.enabled:
+            if not self.clock_probe.alignment_ready:
+                raw_fallback = True
+                logger.warning(
+                    "CLOCK ALIGNMENT SKIPPED: calibration precision gate did not PASS"
+                )
+                logger.warning(
+                    "Skipping timestamp alignment, NCCL validation, and CLC"
+                )
+                logger.warning(
+                    "Raw rank traces will still be fused; visualization and "
+                    "download remain available"
+                )
+            else:
+                try:
+                    traces_to_fuse = self.trace_postprocessor.align_trace_files(
+                        trace_inputs,
+                        profile_dir,
+                        self.clock_probe.local_session_path,
+                    )
+                    aligned = True
+                except AlignmentValidationError as exc:
+                    raise RuntimeError(
+                        "Clock calibration passed, but strict NCCL validation failed; "
+                        "aligned timeline was rejected. "
+                        f"Manifest: {exc.manifest_path}; reason: {exc}"
+                    ) from exc
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Clock calibration passed, but strict trace alignment failed: "
+                        f"{exc}"
+                    ) from exc
+
+        return self.trace_postprocessor.fuse_trace_files(
+            traces_to_fuse,
+            profile_dir,
+            aligned=aligned,
+            raw_fallback=raw_fallback,
+        )
 
     def cleanup(self) -> None:
         if getattr(self, "_cleanup_started", False):

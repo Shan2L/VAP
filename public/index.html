@@ -1869,7 +1869,7 @@
               <label>Probe Port<input id="clock-probe-port" type="number" min="1" max="65535" /></label>
               <label>Software Interval (ms)<input id="clock-probe-interval" type="number" min="0.001" step="0.001" /></label>
               <label>Hardware Interval (ms)<input id="clock-probe-hw-interval" type="number" min="0.001" step="0.001" /></label>
-              <label class="checkbox-field"><input id="clock-probe-required" type="checkbox" />Fail run when probing/alignment fails</label>
+              <label class="checkbox-field"><input id="clock-probe-required" type="checkbox" disabled />Calibration gate failure warns and uses raw traces</label>
               <label class="checkbox-field"><input id="clock-probe-clc" type="checkbox" />Apply CLC when alignment validation warns</label>
               <label>Preferred Hardware Interface (optional)<input id="clock-probe-interface" placeholder="Auto-detect per node" /></label>
               <label>Preferred PHC Device (optional)<input id="clock-probe-phc" placeholder="Auto-detect /dev/ptpN" /></label>
@@ -3495,6 +3495,7 @@
         .classList.toggle("distributed-disabled", !enabled);
       document.querySelectorAll("#clock-probe-settings input, #clock-probe-settings select, #clock-probe-settings button")
         .forEach((element) => { element.disabled = !enabled; });
+      document.getElementById("clock-probe-required").disabled = true;
       document.getElementById("clock-probe-interface").disabled = !hardwareEnabled;
       document.getElementById("clock-probe-phc").disabled = !hardwareEnabled;
       document.getElementById("clock-probe-hw-interval").disabled = !hardwareEnabled;
@@ -3595,7 +3596,7 @@
           enabled: document.getElementById("clock-probe-enable").checked,
           apply_clc_on_warning: document.getElementById("clock-probe-clc").checked,
           mode: document.getElementById("clock-probe-mode").value,
-          required: document.getElementById("clock-probe-required").checked,
+          required: false,
           ray_address: currentConfig.clock_probe_cfg?.ray_address || "auto",
           port: Number(document.getElementById("clock-probe-port").value) || 31990,
           interval_ms: Number(document.getElementById("clock-probe-interval").value) || 100,
@@ -3645,7 +3646,7 @@
       document.getElementById("clock-probe-enable").checked = Boolean(clockProbe.enabled && dist.enable);
       document.getElementById("clock-probe-clc").checked = Boolean(clockProbe.apply_clc_on_warning);
       document.getElementById("clock-probe-mode").value = clockProbe.mode || "hardware";
-      document.getElementById("clock-probe-required").checked = Boolean(clockProbe.required);
+      document.getElementById("clock-probe-required").checked = false;
       document.getElementById("clock-probe-port").value = clockProbe.port ?? 31990;
       document.getElementById("clock-probe-interval").value = clockProbe.interval_ms ?? 100;
       document.getElementById("clock-probe-hw-interval").value = clockProbe.hardware_interval_ms ?? 50;

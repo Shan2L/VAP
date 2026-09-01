@@ -1598,7 +1598,7 @@ class RuntimeAndCliTests(unittest.TestCase):
         self.assertIn("cse-ai-6", output)
         self.assertIn("4284.4 ns exceeds 1000.0 ns", output)
 
-    def test_required_clock_probe_fail_session_raises(self) -> None:
+    def test_required_clock_probe_fail_session_warns_and_disables_alignment(self) -> None:
         payload = example_payload()
         payload["clock_probe_cfg"]["enabled"] = True
         payload["clock_probe_cfg"]["mode"] = "hardware"
@@ -1631,11 +1631,126 @@ class RuntimeAndCliTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with (
-                self.assertLogs("VAP", level="WARNING"),
-                self.assertRaisesRegex(RuntimeError, "Required Clock Probe"),
-            ):
+            with self.assertLogs("VAP", level="WARNING") as logs:
                 clock_probe.stop()
+
+            self.assertTrue(clock_probe.has_session)
+            self.assertFalse(clock_probe.alignment_ready)
+            self.assertTrue(
+                any(
+                    "Clock probe calibration FAILED" in line
+                    for line in logs.output
+                )
+            )
+
+    def test_failed_clock_session_skips_alignment_nccl_and_clc(self) -> None:
+        payload = example_payload()
+        payload["clock_probe_cfg"]["enabled"] = True
+        payload["clock_probe_cfg"]["mode"] = "software"
+        payload["clock_probe_cfg"]["required"] = True
+        parsed = config.VAPConfig.model_validate(payload)
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.config = parsed
+        pipeline.log_path = "/tmp/vap-test"
+        pipeline.date_str = "20260901_090000"
+        pipeline.visualization_host = "127.0.0.1"
+        pipeline.master_runner = Mock()
+        pipeline.master_runner.target.label = "local"
+        worker = Mock()
+        worker.target.label = "worker.example"
+        pipeline.worker_runners = [worker]
+        pipeline.ray_cluster = Mock()
+        pipeline.ray_cluster.runner_node_ids = {
+            "local": "head-node-id",
+            "worker.example": "worker-node-id",
+        }
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.enabled = True
+        pipeline.clock_probe.alignment_ready = False
+        pipeline.ptp4l = Mock()
+        pipeline.ptp4l.enabled = False
+        pipeline.profiler = Mock()
+        pipeline.profiler.enabled = True
+        pipeline.trace_postprocessor = Mock()
+        pipeline.trace_postprocessor.profile_dir = "/tmp/vap-test/vllm-profile"
+        pipeline.trace_postprocessor.distributed_trace_inputs.return_value = {
+            0: types.SimpleNamespace(path=Path("/tmp/rank-0.json")),
+            1: types.SimpleNamespace(path=Path("/tmp/rank-1.json")),
+        }
+        pipeline.trace_postprocessor.fuse_trace_files.return_value = (
+            "/tmp/vap-test/vllm-profile/raw-fallback-merged_trace.json"
+        )
+        pipeline._check_model_weights = Mock()
+        pipeline._deploy_model = Mock()
+        pipeline._wait_for_vllm_ready = Mock()
+        pipeline._run_workload = Mock()
+        pipeline.cleanup = Mock()
+
+        with (
+            patch.object(torch_pipeline, "check_port_availability"),
+            patch.object(torch_pipeline.os.path, "exists", return_value=True),
+            patch.object(pipeline, "_container_spec", return_value=Mock()),
+            patch.object(torch_pipeline, "start_tensorboard", return_value=Mock()),
+            patch.object(torch_pipeline, "start_perfetto", return_value=Mock()),
+            patch.object(torch_pipeline, "write_visualization_pids"),
+            patch.object(torch_pipeline, "wait_for_visualizations"),
+            patch.object(torch_pipeline, "stop_visualizations"),
+            self.assertLogs("VAP", level="WARNING") as logs,
+        ):
+            pipeline.run_pipeline()
+
+        pipeline.trace_postprocessor.align_trace_files.assert_not_called()
+        pipeline.trace_postprocessor.fuse_trace_files.assert_called_once()
+        self.assertTrue(
+            pipeline.trace_postprocessor.fuse_trace_files.call_args.kwargs[
+                "raw_fallback"
+            ]
+        )
+        output = "\n".join(logs.output)
+        self.assertIn(
+            "CLOCK ALIGNMENT SKIPPED: calibration precision gate did not PASS",
+            output,
+        )
+        self.assertIn(
+            "Raw rank traces will still be fused; visualization and download "
+            "remain available",
+            output,
+        )
+
+    def test_passed_clock_gate_makes_downstream_validation_strict(self) -> None:
+        pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
+            torch_pipeline.TorchProfilingPipeline
+        )
+        pipeline.clock_probe = Mock()
+        pipeline.clock_probe.enabled = True
+        pipeline.clock_probe.alignment_ready = True
+        pipeline.clock_probe.local_session_path = Path("/tmp/clock-session.json")
+        pipeline.ray_cluster = Mock()
+        pipeline.ray_cluster.runner_node_ids = {
+            "local": "head-node-id",
+            "worker.example": "worker-node-id",
+        }
+        pipeline.trace_postprocessor = Mock()
+        pipeline.trace_postprocessor.distributed_trace_inputs.return_value = {
+            0: types.SimpleNamespace(path=Path("/tmp/rank-0.json")),
+            1: types.SimpleNamespace(path=Path("/tmp/rank-1.json")),
+        }
+        pipeline.trace_postprocessor.align_trace_files.side_effect = (
+            trace_service.AlignmentValidationError(
+                "NCCL causal validation failed",
+                manifest_path="/tmp/aligned/manifest.json",
+            )
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Clock calibration passed, but strict NCCL validation failed",
+        ):
+            pipeline._postprocess_distributed_traces("/tmp/vllm-profile")
+
+        pipeline.trace_postprocessor.fuse_trace_files.assert_not_called()
 
     def test_clock_probe_is_disabled_for_single_node_runs(self) -> None:
         payload = example_payload()
