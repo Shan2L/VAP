@@ -131,7 +131,8 @@ These tools inspect state without changing a process or configuration:
 - `read_log_file`: read an approved VAP log;
 - `inspect_latest_trace`: inspect trace metadata and a bounded preview;
 - `run_perfetto_sql`: execute one whitelisted Perfetto SQL preset;
-- `run_torchprofiler_skill`: execute a structured trace-analysis workflow.
+- `run_torchprofiler_skill`: execute a structured trace-analysis workflow;
+- `list_profile_runs`: list recent runs with model, TP size, and rank traces.
 
 ### Safe Tools
 
@@ -142,7 +143,14 @@ These tools perform bounded checks or prepare information:
 - `check_resources`: check model paths, Docker image, devices, and mounts;
 - `prepare_run`: determine whether a configuration is ready to run;
 - `prepare_download_artifact`: create an approved download link for logs or
-  trace artifacts.
+  trace artifacts;
+- `analyze_layer_overlap`: attribute each decoder layer's GPU time in one run to
+  compute, hidden and exposed RCCL (wait vs transfer), and idle, and write a
+  Markdown/HTML report with download links;
+- `compare_runs`: compare run B against run A (two traces): per category, layer,
+  kernel and collective changes for the same TP size, or the loss against linear
+  scaling for different TP sizes, with a comparison report. The Web UI
+  **Analysis** tab calls the same backend.
 
 ### Approval-required Tools
 
@@ -152,7 +160,10 @@ These tools affect running processes:
 - `stop_run`: terminate the active workflow.
 
 The Agent must return an approval request and wait for explicit user approval
-before either tool is executed.
+before either tool is executed. The pending call is stored on the server. The
+user's decision resumes the same conversation: an approved call runs, a rejected
+call is reported to the model as not executed, and the Agent continues with that
+result.
 
 ```mermaid
 flowchart TD
@@ -162,7 +173,9 @@ flowchart TD
     Safety -->|"requires_approval"| Pending["Create pending action"]
     Pending --> UserDecision{"User decision"}
     UserDecision -->|"Approve"| ExecuteMutation["Execute start or stop"]
-    UserDecision -->|"Cancel"| Discard["Discard action"]
+    UserDecision -->|"Reject"| Discard["Report rejection to the model"]
+    ExecuteMutation --> Resume["Resume the conversation"]
+    Discard --> Resume
 ```
 
 ## Tools Versus Skills
@@ -332,15 +345,18 @@ Current workaround:
 - preserve important final settings in the VAP configuration rather than only in
   chat.
 
-### Browser-side, Non-durable Conversation State
+### Server-side Conversation State
 
-Conversation messages are stored by the Web UI, not as durable server-side Agent
-memory. A server restart changes the session identifier and clears pending Agent
-state. Pending approvals and an unlock key stored in process memory are also
-lost.
+Conversations, tool calls and results, pending approvals, and an audit trail of
+LLM calls, tool calls, and approval decisions are stored in
+`$VAP_HOME/agent.sqlite3` and survive server restarts; conversations idle for 30
+days are deleted. The Web UI keeps only the conversation identifier and a display
+copy of the chat. The unlock key stays in process memory and must be entered
+again after a restart unless `VAP_LLM_SUBSCRIPTION_KEY` is set.
 
-The Agent therefore does not provide a durable knowledge base across servers,
-users, or machines.
+Tool results are capped at 16,000 characters in the model context and older
+turns are dropped once the history exceeds 200,000 characters. The conversation
+store is per server, not a shared knowledge base across users or machines.
 
 ### Fixed Tool and Skill Registry
 
@@ -453,9 +469,9 @@ and manual Perfetto analysis continue to work without the Agent.
 Possible improvements that preserve the safety model include:
 
 - rolling context summaries with pinned configuration and approval state;
-- per-user durable sessions and audit logs;
+- per-user sessions and a UI for the audit log;
 - a signed, reviewable Skill registry;
-- more VAP-owned SQL and cross-run comparison Skills;
+- more VAP-owned SQL Skills;
 - parallel execution of independent read-only checks;
 - a sandboxed allowlist of host diagnostics rather than unrestricted Bash;
 - distributed deployment tools with explicit host and credential policies.

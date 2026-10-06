@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -17,7 +18,7 @@ def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         config = VAPConfig.model_validate(payload)
         errors = validate_runtime_config(config)
-        warnings = build_security_warnings(config)
+        warnings = build_security_warnings(config) + build_profiler_warnings(config)
         if errors:
             return {
                 "valid": False,
@@ -373,6 +374,73 @@ def build_security_warnings(config: VAPConfig) -> list[dict[str, str]]:
         }
     )
     return warnings
+
+
+def _positive_int(cfg: dict[str, Any], *keys: str, default: int = 1) -> int:
+    for key in keys:
+        value = cfg.get(key)
+        if isinstance(value, str) and value.isdigit():
+            value = int(value)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return default
+
+
+def expected_gpu_workers(config: VAPConfig) -> int:
+    deploy = config.vllm_deploy_cfg
+    return (
+        _positive_int(deploy, "-tp", "--tensor-parallel-size")
+        * _positive_int(deploy, "-pp", "--pipeline-parallel-size")
+        * _positive_int(deploy, "-dp", "--data-parallel-size")
+    )
+
+
+def estimated_engine_steps(config: VAPConfig) -> int | None:
+    """Upper bound on engine steps of a random-dataset benchmark: every wave
+    of max_concurrency requests decodes at most random_output_len tokens."""
+    bench = config.vllm_bench_cfg
+    if bench.get("--dataset-name") != "random":
+        return None
+    prompts = _positive_int(bench, "--num-prompts", default=0)
+    output_len = _positive_int(bench, "--random-output-len", default=0)
+    if not prompts or not output_len:
+        return None
+    concurrency = min(
+        _positive_int(bench, "--max-concurrency", default=prompts), prompts
+    )
+    return math.ceil(prompts / concurrency) * output_len
+
+
+def build_profiler_warnings(config: VAPConfig) -> list[dict[str, str]]:
+    steps = estimated_engine_steps(config)
+    if steps is None:
+        return []
+    delay = config.profiler_cfg.delay_iterations
+    window = delay + config.profiler_cfg.max_iterations
+    if delay >= steps:
+        return [
+            {
+                "path": "profiler_cfg.delay_iterations",
+                "message": (
+                    f"delay_iterations ({delay}) is not below the at most ~{steps} engine "
+                    "steps this benchmark runs, so the GPU profiler may never start and no "
+                    "rank traces would be written. Lower delay_iterations or lengthen the "
+                    "benchmark."
+                ),
+            }
+        ]
+    if config.profiler_cfg.max_iterations and window > steps:
+        return [
+            {
+                "path": "profiler_cfg.max_iterations",
+                "message": (
+                    f"delay_iterations + max_iterations ({window}) exceeds the at most "
+                    f"~{steps} engine steps of this benchmark; fewer steps than requested "
+                    "will be captured."
+                ),
+            }
+        ]
+    return []
 
 
 def has_shell_unsafe_chars(value: Any) -> bool:

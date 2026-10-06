@@ -10,6 +10,7 @@ import socket
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 
 import docker
 import requests
@@ -24,8 +25,9 @@ from runtime_paths import (
     VAP_VENV_DIR,
     ensure_vap_home,
 )
+from trace_attribution import find_trace_files, rank_from_name
 from trace_fusion import fuse_traces
-from validation import PERFETTO_PORT, validate_config_or_raise
+from validation import PERFETTO_PORT, expected_gpu_workers, validate_config_or_raise
 
 logger = logging.getLogger("VAP")
 
@@ -204,7 +206,6 @@ def deploy_vllm_server(
 
     rocm_devices = [
         "/dev/kfd",
-        "/dev/mem",
     ]
     devices = list(
         dict.fromkeys(rocm_devices + (config.container_cfg.devices or ["/dev/dri/"]))
@@ -316,6 +317,13 @@ def safe_filename_part(value: str) -> str:
     return "".join(
         ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value
     ).strip("_")
+
+
+def count_rank_traces(profile_dir: str) -> int:
+    if not os.path.isdir(profile_dir):
+        return 0
+    ranks = {rank_from_name(path.name) for path in find_trace_files(Path(profile_dir))}
+    return len(ranks - {None})
 
 
 def merged_trace_output_file(profile_dir: str, config: VAPConfig) -> str:
@@ -605,6 +613,16 @@ def run(args, log_dir: str):
             container.stop()
             container.remove()
 
+    expected_traces = expected_gpu_workers(config)
+    found_traces = count_rank_traces(os.path.join(log_path, "vllm-profile"))
+    if found_traces < expected_traces:
+        logger.error(
+            "Expected %d GPU rank traces but found %d. The GPU profiler window probably "
+            "never opened (check profiler_cfg.delay_iterations against the benchmark "
+            "length) or a worker failed to write its trace.",
+            expected_traces,
+            found_traces,
+        )
     # 4. print profile result path
     logger.info(
         f"Profile archive has been saved to: {os.path.join(log_path, 'vllm-profile')}"

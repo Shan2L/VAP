@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -17,14 +18,17 @@ import time
 import uuid
 import zipfile
 from collections import Counter, defaultdict
+from dataclasses import asdict
 from http import HTTPStatus
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Iterator
+from urllib.parse import parse_qs, urlencode, urlparse
 
-from agent_runtime import AgentTool, VAPAgentRuntime
+import analysis_report
+import trace_attribution
+from agent_runtime import AGENT_MODEL, AgentTool, VAPAgentRuntime
 from config import VAPConfig
 from runtime_paths import (
     APP_DIR,
@@ -74,6 +78,16 @@ AGENT_TOOLS_LOCK = threading.Lock()
 SHUTDOWN_CLEANUP_LOCK = threading.Lock()
 SHUTDOWN_CLEANUP_DONE = False
 TORCHPROFILER_SKILL_DIR = APP_DIR / "skills" / "TorchProfilerTraceSkill"
+ATTRIBUTION_FILE_TYPES = {
+    ".md": "text/markdown; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json",
+    ".csv": "text/csv; charset=utf-8",
+}
+ATTRIBUTION_FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")
+RUN_OUTPUT_MAX_CHARS = 256 * 1024
+STATUS_LOG_TAIL_CHARS = 64 * 1024
+LOG_VIEW_TAIL_CHARS = 256 * 1024
 
 
 def parse_cookie_header(header: str | None) -> dict[str, str]:
@@ -502,7 +516,7 @@ def resolve_config_path(raw_path: str | None) -> Path:
     return resolve_under_vap_home(raw_path)
 
 
-def get_run_state_snapshot() -> dict[str, Any]:
+def get_run_state_snapshot(output_chars: int = STATUS_LOG_TAIL_CHARS) -> dict[str, Any]:
     with RUN_LOCK:
         process = RUN_STATE["process"]
         run_dir = RUN_STATE["run_dir"]
@@ -516,13 +530,15 @@ def get_run_state_snapshot() -> dict[str, Any]:
             "config_path": (
                 str(RUN_STATE["config_path"]) if RUN_STATE["config_path"] else None
             ),
-            "output": RUN_STATE["output"],
+            "output": RUN_STATE["output"][-output_chars:],
             "stop_requested": RUN_STATE["stop_requested"],
             "has_process": process is not None,
         }
 
 
-def read_current_log_file(file_name: str) -> dict[str, Any]:
+def read_current_log_file(
+    file_name: str, max_chars: int | None = None
+) -> dict[str, Any]:
     allowed_names = {"vap_log.txt", "vllm_deploy.log", "vllm_bench.log"}
     if file_name not in allowed_names:
         raise ValueError("Unsupported log file")
@@ -541,12 +557,22 @@ def read_current_log_file(file_name: str) -> dict[str, Any]:
 
     log_path = (run_dir / file_name).resolve()
     if log_path.is_file() and log_path.is_relative_to(LOGS_DIR.resolve()):
+        size = log_path.stat().st_size
+        truncated = max_chars is not None and size > max_chars
+        with log_path.open("rb") as handle:
+            if truncated:
+                handle.seek(size - max_chars)
+            content = handle.read().decode("utf-8", errors="replace")
+        if truncated:
+            content = content.split("\n", 1)[-1]
         return {
             "exists": True,
             "name": file_name,
             "path": str(log_path),
             "run_dir": str(run_dir),
-            "content": log_path.read_text(encoding="utf-8", errors="replace"),
+            "size": size,
+            "truncated": truncated,
+            "content": content,
         }
 
     return {
@@ -643,7 +669,9 @@ def monitor_run_process(
         if line:
             with RUN_LOCK:
                 if RUN_STATE["process"] is process:
-                    RUN_STATE["output"] += line
+                    RUN_STATE["output"] = (RUN_STATE["output"] + line)[
+                        -RUN_OUTPUT_MAX_CHARS:
+                    ]
         elif process.poll() is not None:
             break
         else:
@@ -1496,6 +1524,436 @@ def prepare_download_artifact(args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def resolve_run_dir(raw_run_dir: Any) -> Path:
+    """A run directory name or path under LOGS_DIR; defaults to the current
+    or latest run."""
+    if isinstance(raw_run_dir, str) and raw_run_dir.strip():
+        candidate = Path(raw_run_dir.strip())
+        if not candidate.is_absolute():
+            candidate = LOGS_DIR / candidate
+        run_dir = candidate.resolve()
+        logs_dir = LOGS_DIR.resolve()
+        if (
+            run_dir == logs_dir
+            or not run_dir.is_relative_to(logs_dir)
+            or not run_dir.is_dir()
+        ):
+            raise ValueError(f"Unknown run directory: {raw_run_dir}")
+        return run_dir
+    snapshot = get_run_state_snapshot()
+    run_dir = (
+        Path(snapshot["run_dir"]).resolve()
+        if snapshot["run_dir"]
+        else latest_log_run_dir()
+    )
+    if run_dir is None:
+        raise ValueError("No run directory is available yet")
+    return run_dir
+
+
+def bounded_int_arg(
+    args: dict[str, Any], name: str, default: int | None, low: int, high: int
+) -> int | None:
+    value = args.get(name, default)
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not low <= value <= high
+    ):
+        raise ValueError(f"{name} must be an integer from {low} to {high}")
+    return value
+
+
+def load_cached_attribution(
+    path: Path,
+    layout: trace_attribution.Layout,
+    trace_files: list[Path],
+    topology: trace_attribution.Topology | None = None,
+) -> dict[str, Any] | None:
+    try:
+        if path.is_symlink() or path.stat().st_mtime < max(
+            trace.stat().st_mtime for trace in trace_files
+        ):
+            return None
+        cached = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    meta = cached.get("meta", {}) if isinstance(cached, dict) else {}
+    cached_layout = {key: meta.get("layout", {}).get(key) for key in asdict(layout)}
+    if (
+        not isinstance(cached, dict)
+        or cached.get("schema_version") != trace_attribution.SCHEMA_VERSION
+        or cached_layout != asdict(layout)
+        or (topology is not None and meta.get("topology") != asdict(topology))
+    ):
+        return None
+    return cached
+
+
+def run_attribution(
+    run_dir: Path, args: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, str], bool]:
+    profile_dir = (run_dir / "vllm-profile").resolve()
+    if not profile_dir.is_dir() or not profile_dir.is_relative_to(LOGS_DIR.resolve()):
+        raise ValueError(f"Run {run_dir.name} has no vllm-profile directory")
+    trace_files = trace_attribution.find_trace_files(profile_dir)
+    if not trace_files:
+        raise ValueError(f"Run {run_dir.name} has no PyTorch trace files")
+    info = trace_attribution.run_model_info(run_dir)
+    num_layers = bounded_int_arg(args, "num_layers", info["num_layers"], 1, 1024)
+    if num_layers is None:
+        raise ValueError(
+            f"Cannot read num_hidden_layers for {info['model'] or run_dir.name}; pass num_layers"
+        )
+    layout = trace_attribution.Layout(
+        num_layers,
+        bounded_int_arg(args, "comms_per_layer", 2, 1, 8),
+        bounded_int_arg(args, "pre_comms", 1, 0, 8),
+    )
+    topology = (
+        trace_attribution.Topology(**info["topology"]) if info["topology"] else None
+    )
+    cached = None
+    if not args.get("refresh"):
+        cached = load_cached_attribution(
+            run_dir / "attribution" / "attribution.json",
+            layout,
+            trace_files,
+            topology,
+        )
+    result = cached or trace_attribution.analyze(trace_files, layout, topology)
+    result["meta"].update(
+        model=info["model"],
+        run_dir=run_dir.name,
+        trace_dir=str(profile_dir),
+        concurrency=info["concurrency"],
+        bench=info["bench"],
+    )
+    outputs = trace_attribution.write_analysis(result, run_dir / "attribution")
+    return result, outputs, cached is not None
+
+
+def attribution_download(run_dir: Path, file_path: str, label: str) -> dict[str, str]:
+    query = urlencode({"run_dir": run_dir.name, "name": Path(file_path).name})
+    return {
+        "label": f"{run_dir.name}: {label}",
+        "download_url": f"/api/attribution/file?{query}",
+    }
+
+
+def analyze_run(args: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+    """Per-layer attribution of one run; returns the payload and report path."""
+    validate_refresh_arg(args)
+    run_dir = resolve_run_dir(args.get("run_dir"))
+    result, outputs, cached = run_attribution(run_dir, args)
+    payload = {
+        "run": run_dir.name,
+        "cached": cached,
+        **trace_attribution.agent_summary(result),
+        "downloads": [
+            attribution_download(
+                run_dir, outputs["markdown"], "layer report (Markdown)"
+            ),
+            attribution_download(run_dir, outputs["html"], "layer heatmap (HTML)"),
+        ],
+    }
+    return payload, Path(outputs["markdown"])
+
+
+def _compare_pair(args: dict[str, Any]) -> dict[str, Any]:
+    validate_refresh_arg(args)
+    base_raw, target_raw = args.get("base_run"), args.get("target_run")
+    if not all(
+        isinstance(value, str) and value.strip() for value in (base_raw, target_raw)
+    ):
+        raise ValueError("base_run and target_run are required")
+    base_dir, target_dir = resolve_run_dir(base_raw), resolve_run_dir(target_raw)
+    if base_dir == target_dir:
+        raise ValueError("base_run and target_run must name different runs")
+    base, base_outputs, base_cached = run_attribution(base_dir, args)
+    target, target_outputs, target_cached = run_attribution(target_dir, args)
+    comparison = trace_attribution.compare(base, target)
+    stem = "compare_vs_" + re.sub(r"[^A-Za-z0-9_.-]", "_", base_dir.name)
+    outputs = trace_attribution.write_compare(
+        comparison, target_dir / "attribution", stem
+    )
+    return {
+        "base_dir": base_dir,
+        "target_dir": target_dir,
+        "base": base,
+        "target": target,
+        "cached": (base_cached, target_cached),
+        "comparison": comparison,
+        "stem": stem,
+        "outputs": outputs,
+        "run_outputs": (base_outputs, target_outputs),
+    }
+
+
+def compare_two_runs(
+    args: dict[str, Any], include_layers: bool = True
+) -> tuple[dict[str, Any], Path]:
+    """Compare run B (target) against run A (base) per token round and GPU:
+    a plain difference when both use the same GPU count, otherwise the loss
+    against linear scaling."""
+    pair = _compare_pair(args)
+    base_dir, target_dir = pair["base_dir"], pair["target_dir"]
+    outputs = pair["outputs"]
+    base_outputs, target_outputs = pair["run_outputs"]
+    payload = {
+        "base_run": base_dir.name,
+        "target_run": target_dir.name,
+        "comparison": trace_attribution.compare_summary(
+            pair["comparison"], include_layers
+        ),
+        "runs": [
+            {
+                "run": run_dir.name,
+                "cached": cached,
+                **trace_attribution.agent_summary(result, include_layers=False),
+            }
+            for run_dir, result, cached in (
+                (base_dir, pair["base"], pair["cached"][0]),
+                (target_dir, pair["target"], pair["cached"][1]),
+            )
+        ],
+        "downloads": [
+            attribution_download(
+                target_dir, outputs["markdown"], "comparison data (Markdown)"
+            ),
+            attribution_download(target_dir, outputs["csv"], "per-layer A/B (CSV)"),
+            attribution_download(target_dir, outputs["json"], "comparison (JSON)"),
+            attribution_download(
+                base_dir, base_outputs["markdown"], "A layer report (Markdown)"
+            ),
+            attribution_download(
+                target_dir, target_outputs["markdown"], "B layer report (Markdown)"
+            ),
+        ],
+    }
+    return payload, Path(outputs["markdown"])
+
+
+def report_stream(args: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Templated A/B report: compute the comparison, let the agent explain it
+    (streamed), fall back to the rule-based narrative, then write the report
+    with the full data appended."""
+    language = args.get("language", "zh")
+    if language not in analysis_report.LANGUAGES:
+        raise ValueError(
+            "language must be one of " + ", ".join(analysis_report.LANGUAGES)
+        )
+    question = args.get("question")
+    if question is not None and (not isinstance(question, str) or len(question) > 2000):
+        raise ValueError("question must be a string of at most 2000 characters")
+    yield {"type": "status", "message": "Analyzing traces"}
+    pair = _compare_pair(args)
+    comparison, target_dir = pair["comparison"], pair["target_dir"]
+    data = analysis_report.report_data(comparison, pair["base"], pair["target"])
+    digest = analysis_report.data_digest({"data": data, "question": question}, language)
+    folder = target_dir / "attribution"
+    stem = f"report_{language}_" + pair["stem"]
+    md_path, html_path = folder / f"{stem}.md", folder / f"{stem}.html"
+    sidecar = folder / f"{stem}.meta.json"
+    downloads = [
+        attribution_download(target_dir, str(md_path), "analysis report (Markdown)"),
+        attribution_download(target_dir, str(html_path), "analysis report (HTML)"),
+        attribution_download(target_dir, pair["outputs"]["csv"], "per-layer A/B (CSV)"),
+        attribution_download(target_dir, pair["outputs"]["json"], "comparison (JSON)"),
+    ]
+    yield {
+        "type": "data",
+        "base_run": pair["base_dir"].name,
+        "target_run": target_dir.name,
+        "comparison": trace_attribution.compare_summary(comparison),
+    }
+    runtime = get_agent_runtime()
+    agent_ready = runtime.status()["unlocked"]
+    if not args.get("refresh"):
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = None
+        # A rule-based report is only reused while the agent is still locked.
+        if (
+            isinstance(meta, dict)
+            and meta.get("digest") == digest
+            and md_path.is_file()
+            and (meta.get("source") == "agent" or not agent_ready)
+        ):
+            yield {"type": "report", **meta, "cached": True, "downloads": downloads}
+            return
+    narrative, source, model = "", "rules", None
+    if agent_ready:
+        yield {"type": "status", "message": "Agent is writing the report"}
+        parts: list[str] = []
+        try:
+            for chunk in runtime.stream_completion(
+                analysis_report.system_prompt(language),
+                analysis_report.user_prompt(data, question),
+                purpose="analysis_report",
+                max_tokens=6000,
+            ):
+                parts.append(chunk)
+                yield {"type": "delta", "content": chunk}
+            narrative = "".join(parts).strip()
+            source, model = "agent", AGENT_MODEL
+        except Exception as exc:
+            yield {
+                "type": "notice",
+                "message": f"Agent failed ({exc}); using the rule-based report.",
+            }
+        if source == "agent" and not analysis_report.split_sections(narrative):
+            yield {
+                "type": "notice",
+                "message": "Agent reply did not follow the template; using the rule-based report.",
+            }
+            narrative, source, model = "", "rules", None
+    else:
+        yield {
+            "type": "notice",
+            "message": "Agent is locked; showing the rule-based report.",
+        }
+    if source == "rules":
+        narrative = analysis_report.rule_narrative(data, language)
+    report = analysis_report.assemble(comparison, narrative, language, source, model)
+    folder.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(report, encoding="utf-8")
+    html_path.write_text(
+        trace_attribution.markdown_to_html(
+            report, trace_attribution.comparison_title(comparison)
+        ),
+        encoding="utf-8",
+    )
+    meta = {
+        "digest": digest,
+        "source": source,
+        "model": model,
+        "language": language,
+        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "conclusion": analysis_report.conclusion_of(narrative, language),
+        "narrative": narrative,
+    }
+    sidecar.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    yield {"type": "report", **meta, "cached": False, "downloads": downloads}
+
+
+def validate_refresh_arg(args: dict[str, Any]) -> None:
+    if not isinstance(args.get("refresh", False), bool):
+        raise ValueError("refresh must be a boolean")
+
+
+def analyze_layer_overlap(args: dict[str, Any]) -> dict[str, Any]:
+    return analyze_run(args)[0]
+
+
+def compare_runs(args: dict[str, Any]) -> dict[str, Any]:
+    payload = compare_two_runs(args, include_layers=False)[0]
+    for phase in payload["comparison"]["phases"].values():
+        phase["kernels"] = phase["kernels"][:6]
+        phase.pop("round", None)
+    payload["runs"] = [
+        {key: run[key] for key in ("run", "parallel", "quality", "findings")}
+        for run in payload["runs"]
+    ]
+    return payload
+
+
+def read_log_tail(args: dict[str, Any]) -> dict[str, Any]:
+    """Agent view of a run log: the tail, optionally only matching lines."""
+    max_chars = bounded_int_arg(args, "max_chars", 12000, 500, 60000)
+    contains = args.get("contains")
+    if contains is not None and (
+        not isinstance(contains, str) or not 0 < len(contains) <= 200
+    ):
+        raise ValueError(
+            "contains must be a non-empty string of at most 200 characters"
+        )
+    log = read_current_log_file(str(args.get("file_name") or ""))
+    if not log.get("exists"):
+        return log
+    text = log.pop("content")
+    if contains:
+        needle = contains.lower()
+        matches = [line for line in text.splitlines() if needle in line.lower()]
+        log["matched_lines"] = len(matches)
+        text = "\n".join(matches)
+    log.pop("truncated", None)
+    log["truncated"] = len(text) > max_chars
+    log["content"] = text[-max_chars:]
+    return log
+
+
+def attribution_file(raw_run_dir: str | None, raw_name: str | None) -> Path:
+    if not raw_run_dir:
+        raise ValueError("run_dir is required")
+    folder = (resolve_run_dir(raw_run_dir) / "attribution").resolve()
+    name = raw_name or ""
+    if (
+        not ATTRIBUTION_FILE_NAME.fullmatch(name)
+        or Path(name).suffix not in ATTRIBUTION_FILE_TYPES
+    ):
+        raise ValueError("Unsupported attribution file name")
+    path = folder / name
+    if (
+        not folder.is_relative_to(LOGS_DIR.resolve())
+        or path.is_symlink()
+        or not path.is_file()
+    ):
+        raise ValueError("Attribution file does not exist")
+    return path
+
+
+def list_profile_runs(args: dict[str, Any]) -> dict[str, Any]:
+    limit = bounded_int_arg(args, "limit", 20, 1, 100)
+    if not LOGS_DIR.is_dir():
+        return {"runs": []}
+    run_dirs = sorted(
+        (
+            path
+            for path in LOGS_DIR.iterdir()
+            if path.is_dir() and not path.is_symlink()
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    runs = []
+    for run_dir in run_dirs[:limit]:
+        info = trace_attribution.run_model_info(run_dir)
+        profile_dir = run_dir / "vllm-profile"
+        traces = (
+            trace_attribution.find_trace_files(profile_dir)
+            if profile_dir.is_dir()
+            else []
+        )
+        topology = info["topology"] or {}
+        runs.append(
+            {
+                "run_dir": run_dir.name,
+                "model": info["model"],
+                "tensor_parallel": info["tensor_parallel"],
+                "parallel": info["parallel"],
+                "gpus": (
+                    trace_attribution.Topology(**topology).gpus if topology else None
+                ),
+                "concurrency": info["concurrency"],
+                "tpot_ms": info["bench"].get("tpot_ms_mean"),
+                "output_tok_s": info["bench"].get("output_tok_s"),
+                "rank_traces": sum(
+                    1
+                    for trace in traces
+                    if trace_attribution.rank_from_name(trace.name) is not None
+                ),
+                "has_layer_report": (
+                    run_dir / "attribution" / "attribution_report.md"
+                ).is_file(),
+            }
+        )
+    return {"runs": runs}
+
+
 def get_agent_runtime() -> VAPAgentRuntime:
     global AGENT_TOOLS_REGISTERED
     with AGENT_TOOLS_LOCK:
@@ -1526,6 +1984,32 @@ def start_agent_run(args: dict[str, Any]) -> dict[str, Any]:
     return start_vap_run(save_temp_config(payload))
 
 
+LAYOUT_TOOL_PARAMETERS: dict[str, Any] = {
+    "num_layers": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1024,
+        "description": "Decoder layers. Defaults to num_hidden_layers in the model's config.json.",
+    },
+    "comms_per_layer": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8,
+        "description": "TP collectives per decoder layer; 2 for dense attention + MLP layers.",
+    },
+    "pre_comms": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 8,
+        "description": "Collectives before the first layer; 1 for a vocab-parallel embedding.",
+    },
+    "refresh": {
+        "type": "boolean",
+        "description": "Recompute instead of reusing a cached analysis.",
+    },
+}
+
+
 def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
     runtime.register_tool(
         AgentTool(
@@ -1542,24 +2026,29 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
             description="Read current VAP run status without changing any process.",
             safety="read_only",
             parameters=object_schema(),
-            handler=lambda args: get_run_state_snapshot(),
+            handler=lambda args: get_run_state_snapshot(output_chars=4000),
         )
     )
     runtime.register_tool(
         AgentTool(
             name="read_log_file",
-            description="Read one current run log file.",
+            description=(
+                "Read the end of a current run log, optionally only the lines that "
+                "contain a case-insensitive substring (e.g. error, Traceback, profil)."
+            ),
             safety="read_only",
             parameters=object_schema(
                 {
                     "file_name": {
                         "type": "string",
                         "enum": ["vap_log.txt", "vllm_deploy.log", "vllm_bench.log"],
-                    }
+                    },
+                    "contains": {"type": "string", "maxLength": 200},
+                    "max_chars": {"type": "integer", "minimum": 500, "maximum": 60000},
                 },
                 ["file_name"],
             ),
-            handler=lambda args: read_current_log_file(str(args["file_name"])),
+            handler=read_log_tail,
         )
     )
     runtime.register_tool(
@@ -1673,6 +2162,68 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
                 ["workflow"],
             ),
             handler=run_torchprofiler_skill,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="list_profile_runs",
+            description="List recent VAP runs, newest first, with model, tensor parallel size, rank trace count, and whether a layer overlap report exists.",
+            safety="read_only",
+            parameters=object_schema(
+                {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}
+            ),
+            handler=list_profile_runs,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="analyze_layer_overlap",
+            description=(
+                "Attribute each decoder layer's GPU time in one run's rank traces to "
+                "GEMM, attention, other compute, RCCL hidden by compute, exposed RCCL "
+                "(waiting for peer ranks vs transfer) and idle. Returns findings plus "
+                "per-layer, per-collective and per-rank tables, and writes a formatted "
+                "Markdown and HTML report."
+            ),
+            safety="safe",
+            parameters=object_schema(
+                {
+                    "run_dir": {
+                        "type": "string",
+                        "description": "Run directory name from list_profile_runs. Defaults to the current or latest run.",
+                    },
+                    **LAYOUT_TOOL_PARAMETERS,
+                }
+            ),
+            handler=analyze_layer_overlap,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="compare_runs",
+            description=(
+                "Compare two profiled runs (two traces): run B (target_run) against run A "
+                "(base_run). With the same TP size it reports B - A per category, layer, "
+                "kernel and collective, plus whether the step-time change exceeds "
+                "step-to-step noise; with different TP sizes it reports the loss against "
+                "linear scaling. Writes a formatted comparison report."
+            ),
+            safety="safe",
+            parameters=object_schema(
+                {
+                    "base_run": {
+                        "type": "string",
+                        "description": "Run A, the baseline (name from list_profile_runs).",
+                    },
+                    "target_run": {
+                        "type": "string",
+                        "description": "Run B, the run being evaluated.",
+                    },
+                    **LAYOUT_TOOL_PARAMETERS,
+                },
+                ["base_run", "target_run"],
+            ),
+            handler=compare_runs,
         )
     )
     runtime.register_tool(
@@ -1823,6 +2374,12 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/profile/trace":
             self.handle_profile_trace(parsed.query)
             return
+        if parsed.path == "/api/attribution/file":
+            self.handle_attribution_file(parsed.query)
+            return
+        if parsed.path == "/api/analysis/runs":
+            self.send_json(list_profile_runs({"limit": 50}))
+            return
         if parsed.path == "/api/agent/status":
             self.handle_agent_status()
             return
@@ -1865,6 +2422,10 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             "/api/agent/chat": self.handle_agent_chat,
             "/api/agent/chat/stream": self.handle_agent_chat_stream,
             "/api/agent/approve": self.handle_agent_approve,
+            "/api/agent/approve/stream": self.handle_agent_decision_stream,
+            "/api/analysis/layers": self.handle_analysis_layers,
+            "/api/analysis/compare": self.handle_analysis_compare,
+            "/api/analysis/report/stream": self.handle_analysis_report_stream,
             "/api/agent/cancel-action": self.handle_agent_cancel_action,
         }
         handler = routes.get(parsed.path)
@@ -1963,7 +2524,14 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         try:
             params = parse_qs(query)
             file_name = params.get("name", [""])[0]
-            self.send_json(read_current_log_file(file_name))
+            log = read_current_log_file(file_name, LOG_VIEW_TAIL_CHARS)
+            if log.get("truncated"):
+                log["content"] = (
+                    f"[Showing the last {LOG_VIEW_TAIL_CHARS // 1024} KiB of "
+                    f"{log['size'] / 1048576:.1f} MiB; download the log for the full file]\n"
+                    + log["content"]
+                )
+            self.send_json(log)
         except Exception as exc:
             self.send_json(
                 {"message": f"Failed to read log: {exc}"}, HTTPStatus.BAD_REQUEST
@@ -1988,7 +2556,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             {
                 **get_run_state_snapshot(),
                 "logs": {
-                    name: read_current_log_file(name)
+                    name: read_current_log_file(name, STATUS_LOG_TAIL_CHARS)
                     for name in ("vap_log.txt", "vllm_deploy.log", "vllm_bench.log")
                 },
             }
@@ -2029,6 +2597,27 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             content,
             content_type,
             f'inline; filename="{trace_path.name}"',
+        )
+
+    def handle_attribution_file(self, query: str) -> None:
+        try:
+            params = parse_qs(query)
+            path = attribution_file(
+                params.get("run_dir", [None])[0], params.get("name", [None])[0]
+            )
+            content = path.read_bytes()
+        except (OSError, ValueError) as exc:
+            self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        disposition = "inline" if path.suffix == ".html" else "attachment"
+        self.send_binary(
+            content,
+            ATTRIBUTION_FILE_TYPES[path.suffix],
+            f'{disposition}; filename="{path.name}"',
+            extra_headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            },
         )
 
     def handle_tensorboard_proxy(self, parsed: Any) -> None:
@@ -2127,25 +2716,49 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_json(get_agent_runtime().chat(payload))
 
     def handle_agent_chat_stream(self) -> None:
-        payload = self.read_json_body()
+        self.send_event_stream(get_agent_runtime().stream_chat(self.read_json_body()))
+
+    def handle_agent_decision_stream(self) -> None:
+        self.send_event_stream(
+            get_agent_runtime().stream_decision(self.read_json_body())
+        )
+
+    def send_event_stream(self, events: Any) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
 
-        def send_event(event: dict[str, Any]) -> None:
-            content = f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode(
-                "utf-8"
+        def send(event: dict[str, Any]) -> None:
+            self.wfile.write(
+                f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
             )
-            self.wfile.write(content)
             self.wfile.flush()
 
         try:
-            for event in get_agent_runtime().stream_chat(payload):
-                send_event(event)
+            for event in events:
+                send(event)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client went away; closing the generator stops the agent run.
+            events.close()
         except Exception as exc:
-            send_event({"type": "error", "message": str(exc)})
+            send({"type": "error", "message": str(exc)})
+
+    def handle_analysis_layers(self) -> None:
+        payload, report = analyze_run(self.read_json_body())
+        self.send_json(
+            {**payload, "report_markdown": report.read_text(encoding="utf-8")}
+        )
+
+    def handle_analysis_compare(self) -> None:
+        payload, report = compare_two_runs(self.read_json_body())
+        self.send_json(
+            {**payload, "report_markdown": report.read_text(encoding="utf-8")}
+        )
+
+    def handle_analysis_report_stream(self) -> None:
+        self.send_event_stream(report_stream(self.read_json_body()))
 
     def handle_agent_approve(self) -> None:
         payload = self.read_json_body()
@@ -2240,6 +2853,10 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        # The session token can appear in the page URL; keep it out of Referer headers.
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
@@ -2251,6 +2868,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
@@ -2261,12 +2879,15 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         content_type: str,
         content_disposition: str | None = None,
         status: HTTPStatus = HTTPStatus.OK,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
         if content_disposition:
             self.send_header("Content-Disposition", content_disposition)
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)

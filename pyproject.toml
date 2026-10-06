@@ -11,7 +11,8 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["agent_runtime", "cli", "config", "main", "runtime_paths", "server", "trace_fusion", "validation"]
+py-modules = ["agent_runtime", "agent_store",
+    "analysis_report", "cli", "config", "main", "runtime_paths", "server", "trace_attribution", "trace_fusion", "validation"]
 
 [dependency-groups]
 dev = [

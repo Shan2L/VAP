@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from types import SimpleNamespace
 
 import main as vap_workflow
@@ -10,6 +11,12 @@ from runtime_paths import APP_DIR, VAP_CONFIG_PATH, VAP_LOGS_DIR, ensure_vap_hom
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["attribute"]:
+        import trace_attribution
+
+        raise SystemExit(trace_attribution.main(argv[1:]))
+
     parser = argparse.ArgumentParser(prog="vap", description="VAP command line tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -27,6 +34,13 @@ def main(argv: list[str] | None = None) -> None:
 
     clean_parser = subparsers.add_parser("clean", help="Remove generated VAP logs")
     clean_parser.add_argument("--logs-dir", default=str(VAP_LOGS_DIR))
+
+    attribute_parser = subparsers.add_parser(
+        "attribute",
+        help="Per-layer RCCL vs compute attribution of rank traces",
+        add_help=False,
+    )
+    attribute_parser.add_argument("args", nargs=argparse.REMAINDER)
 
     uninstall_parser = subparsers.add_parser(
         "uninstall",
