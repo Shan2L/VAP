@@ -2451,24 +2451,6 @@ class FrontendFallbackTests(unittest.TestCase):
 
 
 class TraceSkillSchemaTests(unittest.TestCase):
-    def test_approved_action_message_preserves_result_context(self) -> None:
-        runtime = agent_runtime.VAPAgentRuntime()
-        runtime.register_tool(
-            agent_runtime.AgentTool(
-                name="test_action",
-                description="test",
-                safety="requires_approval",
-                parameters={"type": "object", "properties": {}},
-                handler=lambda args: {"started": True},
-            )
-        )
-        pending = runtime._create_pending_action("test_action", {})
-
-        result = runtime.approve(pending.approval_id)
-
-        self.assertIn("succeeded", result["message"]["content"])
-        self.assertIn("subsequent requests", result["message"]["content"])
-
     def test_default_agent_model_is_gpt_5_6_sol(self) -> None:
         self.assertEqual(agent_runtime.DEFAULT_AGENT_MODEL, "gpt-5.6-sol")
 

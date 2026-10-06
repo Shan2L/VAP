@@ -14,11 +14,14 @@ from vap.agent.analysis import (
 )
 from vap.agent.runtime import AgentTool, VAPAgentRuntime
 from vap.server import settings
-from vap.server.artifacts import (
-    current_config_payload,
-    read_current_log_file,
-    save_temp_config,
+from vap.server.analysis import (
+    LAYOUT_TOOL_PARAMETERS,
+    analyze_layer_overlap,
+    compare_runs,
+    list_profile_runs,
+    read_log_tail,
 )
+from vap.server.artifacts import current_config_payload, save_temp_config
 from vap.server.checks import check_config_ports, check_config_resources
 from vap.server.state import get_run_state_snapshot, start_vap_run, stop_vap_run
 from vap.validation import validate_config_payload
@@ -53,6 +56,11 @@ def start_agent_run(args: dict[str, Any]) -> dict[str, Any]:
     return start_vap_run(save_temp_config(payload))
 
 
+def run_status_for_agent() -> dict[str, Any]:
+    snapshot = get_run_state_snapshot()
+    return {**snapshot, "output": snapshot["output"][-4000:]}
+
+
 def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
     runtime.register_tool(
         AgentTool(
@@ -69,24 +77,29 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
             description="Read current VAP run status without changing any process.",
             safety="read_only",
             parameters=object_schema(),
-            handler=lambda args: get_run_state_snapshot(),
+            handler=lambda args: run_status_for_agent(),
         )
     )
     runtime.register_tool(
         AgentTool(
             name="read_log_file",
-            description="Read one current run log file.",
+            description=(
+                "Read the end of a current run log, optionally only the lines that "
+                "contain a case-insensitive substring (e.g. error, Traceback, profil)."
+            ),
             safety="read_only",
             parameters=object_schema(
                 {
                     "file_name": {
                         "type": "string",
                         "enum": ["vap_log.txt", "vllm_deploy.log", "vllm_bench.log"],
-                    }
+                    },
+                    "contains": {"type": "string", "maxLength": 200},
+                    "max_chars": {"type": "integer", "minimum": 500, "maximum": 60000},
                 },
                 ["file_name"],
             ),
-            handler=lambda args: read_current_log_file(str(args["file_name"])),
+            handler=read_log_tail,
         )
     )
     runtime.register_tool(
@@ -244,5 +257,67 @@ def register_vap_agent_tools(runtime: VAPAgentRuntime) -> None:
             safety="requires_approval",
             parameters=object_schema(),
             handler=lambda args: stop_vap_run(),
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="list_profile_runs",
+            description="List recent VAP runs, newest first, with model, tensor parallel size, rank trace count, and whether a layer overlap report exists.",
+            safety="read_only",
+            parameters=object_schema(
+                {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}
+            ),
+            handler=list_profile_runs,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="analyze_layer_overlap",
+            description=(
+                "Attribute each decoder layer's GPU time in one run's rank traces to "
+                "GEMM, attention, other compute, RCCL hidden by compute, exposed RCCL "
+                "(waiting for peer ranks vs transfer) and idle. Returns findings plus "
+                "per-layer, per-collective and per-rank tables, and writes a formatted "
+                "Markdown and HTML report."
+            ),
+            safety="safe",
+            parameters=object_schema(
+                {
+                    "run_dir": {
+                        "type": "string",
+                        "description": "Run directory name from list_profile_runs. Defaults to the current or latest run.",
+                    },
+                    **LAYOUT_TOOL_PARAMETERS,
+                }
+            ),
+            handler=analyze_layer_overlap,
+        )
+    )
+    runtime.register_tool(
+        AgentTool(
+            name="compare_runs",
+            description=(
+                "Compare two profiled runs (two traces): run B (target_run) against run A "
+                "(base_run). With the same TP size it reports B - A per category, layer, "
+                "kernel and collective, plus whether the step-time change exceeds "
+                "step-to-step noise; with different TP sizes it reports the loss against "
+                "linear scaling. Writes a formatted comparison report."
+            ),
+            safety="safe",
+            parameters=object_schema(
+                {
+                    "base_run": {
+                        "type": "string",
+                        "description": "Run A, the baseline (name from list_profile_runs).",
+                    },
+                    "target_run": {
+                        "type": "string",
+                        "description": "Run B, the run being evaluated.",
+                    },
+                    **LAYOUT_TOOL_PARAMETERS,
+                },
+                ["base_run", "target_run"],
+            ),
+            handler=compare_runs,
         )
     )

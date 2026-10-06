@@ -14,6 +14,14 @@ from vap.agent.analysis import resolve_latest_trace
 from vap.agent.tools import get_agent_runtime, get_agent_status_payload
 from vap.config import VAPConfig
 from vap.server import settings
+from vap.server.analysis import (
+    ATTRIBUTION_FILE_TYPES,
+    analyze_run,
+    attribution_file,
+    compare_two_runs,
+    list_profile_runs,
+    report_stream,
+)
 from vap.server.artifacts import (
     build_log_download,
     create_profile_archive,
@@ -130,6 +138,12 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/agent/status":
             self.handle_agent_status()
             return
+        if parsed.path == "/api/attribution/file":
+            self.handle_attribution_file(parsed.query)
+            return
+        if parsed.path == "/api/analysis/runs":
+            self.send_json(list_profile_runs({"limit": 50}))
+            return
         if parsed.path.startswith("/public/"):
             self.serve_static(parsed.path.removeprefix("/public/"))
             return
@@ -173,7 +187,11 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
             "/api/agent/unlock": self.handle_agent_unlock,
             "/api/agent/chat/stream": self.handle_agent_chat_stream,
             "/api/agent/approve": self.handle_agent_approve,
+            "/api/agent/approve/stream": self.handle_agent_decision_stream,
             "/api/agent/cancel-action": self.handle_agent_cancel_action,
+            "/api/analysis/layers": self.handle_analysis_layers,
+            "/api/analysis/compare": self.handle_analysis_compare,
+            "/api/analysis/report/stream": self.handle_analysis_report_stream,
         }
         handler = routes.get(parsed.path)
         if handler is None and (
@@ -441,25 +459,70 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         )
 
     def handle_agent_chat_stream(self) -> None:
-        payload = self.read_json_body()
+        self.send_event_stream(get_agent_runtime().stream_chat(self.read_json_body()))
+
+    def handle_agent_decision_stream(self) -> None:
+        self.send_event_stream(
+            get_agent_runtime().stream_decision(self.read_json_body())
+        )
+
+    def send_event_stream(self, events: Any) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
 
-        def send_event(event: dict[str, Any]) -> None:
-            content = f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode(
-                "utf-8"
+        def send(event: dict[str, Any]) -> None:
+            self.wfile.write(
+                f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
             )
-            self.wfile.write(content)
             self.wfile.flush()
 
         try:
-            for event in get_agent_runtime().stream_chat(payload):
-                send_event(event)
+            for event in events:
+                send(event)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client went away; closing the generator stops the agent run.
+            events.close()
         except Exception as exc:
-            send_event({"type": "error", "message": str(exc)})
+            send({"type": "error", "message": str(exc)})
+
+    def handle_analysis_layers(self) -> None:
+        payload, report = analyze_run(self.read_json_body())
+        self.send_json(
+            {**payload, "report_markdown": report.read_text(encoding="utf-8")}
+        )
+
+    def handle_analysis_compare(self) -> None:
+        payload, report = compare_two_runs(self.read_json_body())
+        self.send_json(
+            {**payload, "report_markdown": report.read_text(encoding="utf-8")}
+        )
+
+    def handle_analysis_report_stream(self) -> None:
+        self.send_event_stream(report_stream(self.read_json_body()))
+
+    def handle_attribution_file(self, query: str) -> None:
+        try:
+            params = parse_qs(query)
+            path = attribution_file(
+                params.get("run_dir", [None])[0], params.get("name", [None])[0]
+            )
+            content = path.read_bytes()
+        except (OSError, ValueError) as exc:
+            self.send_json({"message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        disposition = "inline" if path.suffix == ".html" else "attachment"
+        self.send_binary(
+            content,
+            ATTRIBUTION_FILE_TYPES[path.suffix],
+            f'{disposition}; filename="{path.name}"',
+            extra_headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            },
+        )
 
     def handle_agent_approve(self) -> None:
         payload = self.read_json_body()
@@ -577,6 +640,10 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        # The session token can appear in the page URL; keep it out of Referer headers.
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
@@ -588,6 +655,7 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)
@@ -598,12 +666,15 @@ class VAPConfigHandler(BaseHTTPRequestHandler):
         content_type: str,
         content_disposition: str | None = None,
         status: HTTPStatus = HTTPStatus.OK,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
         if content_disposition:
             self.send_header("Content-Disposition", content_disposition)
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.send_auth_cookie_if_needed()
         self.end_headers()
         self.wfile.write(content)

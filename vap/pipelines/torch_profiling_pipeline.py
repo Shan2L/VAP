@@ -430,7 +430,7 @@ class TorchProfilingPipeline(Pipeline):
                 )
             )
         os.makedirs(os.path.join(self.log_path, "vllm-profile"), exist_ok=True)
-        devices = ["/dev/kfd", "/dev/mem"]
+        devices = ["/dev/kfd"]
         devices.extend(container_cfg.devices or ["/dev/dri/"])
         if self.clock_probe.enabled and clock_probe.mode != "software":
             if phc_devices is None:
