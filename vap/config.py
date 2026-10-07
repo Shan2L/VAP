@@ -1,7 +1,8 @@
 import os
+import re
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TORCH_PROFILER_DIR = "/app/VAP/log/vllm-profile"
 PARALLEL_SIZE_ALIASES = {
@@ -9,6 +10,55 @@ PARALLEL_SIZE_ALIASES = {
     "pipeline": ("-pp", "--pipeline-parallel-size"),
     "data": ("-dp", "--data-parallel-size"),
 }
+RUN_NAME_DEFAULT = "{model}_{parallel}"
+RUN_NAME_PLACEHOLDERS = ("{model}", "{parallel}")
+RUN_NAME_MAX_LENGTH = 80
+
+
+def _positive_size(deploy: Dict[str, Any], aliases: tuple[str, ...]) -> int:
+    for key in aliases:
+        value = deploy.get(key)
+        if isinstance(value, str) and value.isdigit():
+            value = int(value)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return 1
+
+
+def parallel_sizes(deploy: Dict[str, Any]) -> tuple[int, int, int, int]:
+    """TP, PP, DP and EP sizes from vLLM deploy arguments; 1 when unset."""
+    tp, pp, dp = (
+        _positive_size(deploy, PARALLEL_SIZE_ALIASES[name])
+        for name in ("tensor", "pipeline", "data")
+    )
+    ep = tp * dp if "--enable-expert-parallel" in deploy or "-ep" in deploy else 1
+    return tp, pp, dp, ep
+
+
+def expand_run_name(payload: Dict[str, Any]) -> str:
+    """Suffix of a run's log directory: run_name with {model} (the last part of
+    model_name) and {parallel} (for example tp2pp2) filled in, reduced to
+    letters, digits, '.', '_' and '-'. Tolerates an invalid config."""
+    template = payload.get("run_name", RUN_NAME_DEFAULT)
+    if not isinstance(template, str):
+        return ""
+    model_cfg = payload.get("model_cfg")
+    model = model_cfg.get("model_name") if isinstance(model_cfg, dict) else None
+    deploy = payload.get("vllm_deploy_cfg")
+    tp, pp, dp, ep = parallel_sizes(deploy if isinstance(deploy, dict) else {})
+    parallel = (
+        "".join(
+            f"{name}{size}"
+            for name, size in (("tp", tp), ("pp", pp), ("dp", dp))
+            if size > 1
+        )
+        or "tp1"
+    )
+    if ep > 1:
+        parallel += f"ep{ep}"
+    name = template.replace("{model}", str(model or "").rstrip("/").rsplit("/", 1)[-1])
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name.replace("{parallel}", parallel))
+    return name.strip("-._")[:RUN_NAME_MAX_LENGTH].strip("-._")
 
 
 class StrictBaseModel(BaseModel):
@@ -96,12 +146,29 @@ class DockerConfig(StrictBaseModel):
 
 class VAPConfig(StrictBaseModel):
     model_cfg: ModelConfig
+    # Log directory suffix: <start time>_<run_name>; empty keeps the start time.
+    run_name: str = RUN_NAME_DEFAULT
     distributed_cfg: Optional[DistributedConfig] = None
     clock_probe_cfg: ClockProbeConfig = Field(default_factory=ClockProbeConfig)
     vllm_deploy_cfg: Dict[str, Any]
     vllm_bench_cfg: Dict[str, Any]
     profiler_cfg: ProfilerConfig
     container_cfg: DockerConfig
+
+    @field_validator("run_name")
+    @classmethod
+    def check_run_name(cls, value: str) -> str:
+        literal = value
+        for placeholder in RUN_NAME_PLACEHOLDERS:
+            literal = literal.replace(placeholder, "")
+        if len(value) > RUN_NAME_MAX_LENGTH or not re.fullmatch(
+            r"[A-Za-z0-9._-]*", literal
+        ):
+            raise ValueError(
+                "run_name may only use letters, digits, '.', '_', '-' and the "
+                f"placeholders {{model}} and {{parallel}}, at most {RUN_NAME_MAX_LENGTH} characters"
+            )
+        return value
 
     @property
     def docker_image(self) -> str:

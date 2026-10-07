@@ -10,6 +10,7 @@ from .config import (
     PARALLEL_SIZE_ALIASES,
     TORCH_PROFILER_DIR,
     VAPConfig,
+    expand_run_name,
     is_legacy_distributed_cfg,
 )
 
@@ -543,6 +544,7 @@ def build_config_summary(config: VAPConfig) -> dict[str, Any]:
     distributed = config.distributed_cfg
     return {
         "model": config.model_cfg.model_name,
+        "run_dir_suffix": expand_run_name(config.model_dump()),
         "model_path": config.model_path,
         "docker_image": config.docker_image,
         "vllm_host": config.vllm_host,

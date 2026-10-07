@@ -1709,6 +1709,17 @@
       opacity: var(--heat, 0);
     }
 
+    .field-note {
+      color: var(--text-3);
+      font-size: 11.5px;
+      font-weight: 400;
+      overflow-wrap: anywhere;
+    }
+
+    .field-note.invalid {
+      color: var(--danger);
+    }
+
     .hint {
       margin: 0 0 10px;
       color: var(--text-2);
@@ -2890,6 +2901,8 @@
               <label>Model Root<input id="model_path" placeholder="/path/to/models" /></label>
               <label class="wide-field">Docker Image<input id="image_name" placeholder="registry/image" /></label>
               <label>Image Tag<input id="image_tag" placeholder="latest" /></label>
+              <label class="wide-field">Run Name<input id="run_name" placeholder="empty: start time only" spellcheck="false" />
+                <span class="field-note" id="run-name-preview" aria-live="polite"></span></label>
             </div>
           </div>
         </section>
@@ -5657,6 +5670,41 @@
         .filter(Boolean);
     }
 
+    const RUN_NAME_DEFAULT = "{model}_{parallel}";
+
+    function expandRunName(template, modelName, deploy) {
+      const size = (...keys) => {
+        for (const key of keys) {
+          const raw = deploy?.[key];
+          const value = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : raw;
+          if (Number.isInteger(value) && value > 0) return value;
+        }
+        return 1;
+      };
+      const tp = size("-tp", "--tensor-parallel-size");
+      const pp = size("-pp", "--pipeline-parallel-size");
+      const dp = size("-dp", "--data-parallel-size");
+      const expert = deploy && ("--enable-expert-parallel" in deploy || "-ep" in deploy);
+      const parallel = ([["tp", tp], ["pp", pp], ["dp", dp]].filter(([, value]) => value > 1)
+        .map(([name, value]) => `${name}${value}`).join("") || "tp1") + (expert && tp * dp > 1 ? `ep${tp * dp}` : "");
+      const model = String(modelName || "").replace(/\/+$/, "").split("/").pop();
+      return template.replaceAll("{model}", model).replaceAll("{parallel}", parallel)
+        .replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-._]+|[-._]+$/g, "")
+        .slice(0, 80).replace(/[-._]+$/, "");
+    }
+
+    function updateRunNamePreview() {
+      const template = document.getElementById("run_name").value.trim();
+      const note = document.getElementById("run-name-preview");
+      const literal = template.replaceAll("{model}", "").replaceAll("{parallel}", "");
+      const valid = template.length <= 80 && /^[A-Za-z0-9._-]*$/.test(literal);
+      const suffix = expandRunName(template, document.getElementById("model_name").value.trim(), readKv("deploy-kv"));
+      note.classList.toggle("invalid", !valid);
+      note.textContent = valid
+        ? `Log directory: ~/.vap/logs/<start time>${suffix ? `_${suffix}` : ""} · {model} and {parallel} are filled in from this config`
+        : "Use letters, digits, '.', '_', '-' and the placeholders {model}, {parallel} (at most 80 characters)";
+    }
+
     function buildConfig() {
       const mounts = [...document.querySelectorAll("#mounts-list .pair-row")]
         .map((row) => ({
@@ -5682,6 +5730,7 @@
           model_name: document.getElementById("model_name").value.trim(),
           model_path: document.getElementById("model_path").value.trim(),
         },
+        run_name: document.getElementById("run_name").value.trim(),
         distributed_cfg: {
           enable: distributedEnabled,
           ray_port: rayPort,
@@ -5723,6 +5772,7 @@
       currentConfig = effectiveConfig;
       document.getElementById("model_name").value = effectiveConfig.model_cfg.model_name;
       document.getElementById("model_path").value = effectiveConfig.model_cfg.model_path;
+      document.getElementById("run_name").value = effectiveConfig.run_name ?? RUN_NAME_DEFAULT;
       document.getElementById("image_name").value = container.image_name || "";
       document.getElementById("image_tag").value = container.image_tag || "";
 
@@ -5766,6 +5816,7 @@
 
       document.getElementById("env-list").innerHTML = "";
       Object.entries(container.env_vars || {}).forEach(([key, value]) => addEnv(key, value));
+      updateRunNamePreview();
     }
 
     async function fetchConfig(source) {
@@ -6649,6 +6700,8 @@
     });
     configWorkspace.addEventListener("input", scheduleConfigDraftSave);
     configWorkspace.addEventListener("change", scheduleConfigDraftSave);
+    // Removing a deploy argument row fires no input event.
+    ["input", "change", "click"].forEach((type) => configWorkspace.addEventListener(type, updateRunNamePreview));
     document.querySelectorAll(".kv-list, .list-editor").forEach((container) => {
       container.addEventListener("click", (event) => {
         if (event.target.closest("button")) {

@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from vap.config import parallel_sizes
 from vap.postprocess.fuse import load_trace
 
 SCHEMA_VERSION = 5
@@ -2190,10 +2191,7 @@ def run_model_info(run_dir: Path) -> dict[str, Any]:
         info["model"] = model_cfg["model_name"]
         deploy = config.get("vllm_deploy_cfg") or {}
         bench = config.get("vllm_bench_cfg") or {}
-        tp = _int_arg(deploy, "-tp", "--tensor-parallel-size") or 1
-        pp = _int_arg(deploy, "-pp", "--pipeline-parallel-size") or 1
-        dp = _int_arg(deploy, "-dp", "--data-parallel-size") or 1
-        ep = tp * dp if "--enable-expert-parallel" in deploy or "-ep" in deploy else 1
+        tp, pp, dp, ep = parallel_sizes(deploy)
         topology = Topology(tp, pp, dp, ep)
         info["tensor_parallel"] = tp
         info["topology"] = asdict(topology)
