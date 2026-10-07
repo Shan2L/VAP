@@ -283,29 +283,39 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
     factor = 1.0 if same else data["factor"]
     names = PILLAR_NAMES["zh" if zh else "en"]
     ta_us, tb_us = p["round_us"]["a"], p["round_us"]["b"]
+    share = f"{a['gpus']}/{b['gpus']}"
     if same:
         what = (
-            "从 A 生成一个 token 的时间出发，依次加上四类时间的变化，最后得到 B 的时间。"
+            "最上面一组是每个 token 的总时间，下面每组是一类时间，各类加起来正好等于总时间。"
+            "每组两条：上面淡色的是 A，下面实色的是 B，竖线标出 A 的值；B 比 A 多出的部分画成红色斜线，比 A 少的部分画成绿色虚框。"
             if zh
-            else "Starts from A's time per generated token and adds the change of four kinds of time to reach B's."
+            else "The top group is the time per token; each group below is one kind of time, and the kinds add up to the total. "
+            "Each group has two bars, A on top (faded) and B below (solid), and a line at A's value: where B takes longer than A the excess "
+            "is hatched red, where it takes less the saving is a dashed green box."
         )
     else:
         what = (
-            f"从线性扩展目标（A 的时间 × {a['gpus']}/{b['gpus']}）出发，依次加上四类时间相对目标的偏差，得到 B 的实测时间。"
+            "最上面一组是每个 token 的总时间，下面每组是一类时间，各类加起来正好等于总时间。"
+            f"每组两条：上面淡色的是 A 的实测，下面实色的是 B 的实测；竖线是线性扩展目标，即 A 的值 × {share}，"
+            "也就是这类时间随 GPU 数完美缩放时 B 应达到的值。"
+            "B 超过竖线的红色斜线部分就是这类时间造成的扩展损失，各类的红色部分加起来等于总时间超出目标的部分；"
+            "低于竖线的绿色虚框表示这类时间比线性扩展还好。"
             if zh
-            else f"Starts from the linear-scaling target (A's time × {a['gpus']}/{b['gpus']}) and adds how far each kind of time misses it to reach B's measured time."
+            else "The top group is the time per token; each group below is one kind of time, and the kinds add up to the total. "
+            f"Each group has two bars, A's measurement on top (faded) and B's below (solid); the line is the linear-scaling target, A's value × {share}, "
+            "what B would need if that kind of time scaled perfectly with the GPU count. The hatched red part of B beyond the line "
+            "is the scaling loss that kind of time causes, and the red parts add up to the total's; a dashed green box means "
+            "that kind does better than linear scaling."
         )
     what += (
-        "数值是每张 GPU 生成一个 token 的平均时间（与 TPOT 同口径），四类加起来正好等于总时间："
+        "数值是每张 GPU 生成一个 token 的平均时间（与 TPOT 同口径）："
         "计算是 GPU 在跑计算 kernel；通信是只有通信、没有计算的时间（含等待其他 GPU 到齐）；"
         "流水线等待是等另一个 stage 交来数据（气泡）；空闲是 GPU 上没有任何 kernel，多为 CPU 侧发射间隙。"
-        "条形的颜色表示时间类型，每行的条从上一行结束处开始，向右表示 B 多花时间、向左表示省下时间；右侧红色数值是增加、绿色是减少。"
         if zh
-        else " Values are the average time one GPU spends per generated token (the TPOT basis); the four kinds add up to the total: "
-        "compute is time running compute kernels; communication is time only communicating, with no compute running (including waiting for peer GPUs); "
-        "pipeline wait is waiting for another stage's data (the bubble); idle is no kernel at all, mostly host launch gaps. "
-        "Bar colours are the kinds of time; each change starts where the row above ends and points right when B spends more, "
-        "left when it spends less; the value on the right is red for more time, green for less."
+        else " Values are the average time one GPU spends per generated token (the TPOT basis): "
+        "compute is time running compute kernels; communication is time only communicating, with no compute running "
+        "(including waiting for peer GPUs); pipeline wait is waiting for another stage's data (the bubble); "
+        "idle is no kernel at all, mostly host launch gaps."
     )
     reading: list[str] = []
     delta = tb_us - factor * ta_us
@@ -318,64 +328,123 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
             f"{abs(delta) / ta_us:.1%} {'slower' if delta > 0 else 'faster'} ({_signed_ms(delta)})."
         )
     else:
+        gap = tb_us - ta_us
         reading.append(
-            f"{a['parallel']}（{a['gpus']} 卡）→ {b['parallel']}（{b['gpus']} 卡）：线性扩展下 B 每个 token 应为 {_ms(factor * ta_us)}，"
-            f"实测 {_ms(tb_us)}，加速比 {p['speedup']:.2f}×（理想 {p['ideal_speedup']:.2f}×），扩展效率 {_pct(p['scaling_efficiency'])}。"
+            f"A（{a['parallel']}，{a['gpus']} 卡）每个 token {_ms(ta_us)}，B（{b['parallel']}，{b['gpus']} 卡）{_ms(tb_us)}，"
+            f"比 A {'还慢' if gap > 0 else '快'} {_ms(abs(gap))}。完美线性扩展时 B 应为 {_ms(factor * ta_us)}（A × {share}），"
+            f"实测{'多出' if delta > 0 else '少了'} {_ms(abs(delta))}：加速比 {p['speedup']:.2f}×（理想 {p['ideal_speedup']:.2f}×），"
+            f"扩展效率 {_pct(p['scaling_efficiency'])}。"
             if zh
-            else f"{a['parallel']} ({a['gpus']} GPUs) → {b['parallel']} ({b['gpus']} GPUs): with linear scaling B would need {_ms(factor * ta_us)} per token, "
-            f"it measures {_ms(tb_us)}: speedup {p['speedup']:.2f}x vs ideal {p['ideal_speedup']:.2f}x, scaling efficiency {_pct(p['scaling_efficiency'])}."
+            else f"A ({a['parallel']}, {a['gpus']} GPUs) needs {_ms(ta_us)} per token and B ({b['parallel']}, {b['gpus']} GPUs) "
+            f"{_ms(tb_us)}, {_ms(abs(gap))} {'slower' if gap > 0 else 'faster'} than A. With linear scaling B would need "
+            f"{_ms(factor * ta_us)} (A × {share}); it takes {_ms(abs(delta))} {'more' if delta > 0 else 'less'}: "
+            f"speedup {p['speedup']:.2f}x vs ideal {p['ideal_speedup']:.2f}x, scaling efficiency {_pct(p['scaling_efficiency'])}."
         )
     pillars = p["pillars"]
     moves = {name: pillars["b"][name] - factor * pillars["a"][name] for name in names}
     shown = [name for name in names if max(pillars["a"][name], pillars["b"][name]) >= 1]
-    reading.append(
-        (
-            ("按类型拆分：" if same else "按类型拆分（线性扩展目标 → 实测）：")
-            if zh
-            else (
-                "By kind: " if same else "By kind (linear-scaling target → measured): "
-            )
-        )
-        + ("，" if zh else "; ").join(
+    if same:
+        items = [
             (
-                f"{names[name]} {_ms(factor * pillars['a'][name])} → {_ms(pillars['b'][name])}（{_signed_ms(moves[name])}）"
+                f"{names[name]} {_ms(pillars['a'][name])} → {_ms(pillars['b'][name])}（{_signed_ms(moves[name])}）"
                 if zh
-                else f"{names[name]} {_ms(factor * pillars['a'][name])} → {_ms(pillars['b'][name])} ({_signed_ms(moves[name])})"
+                else f"{names[name]} {_ms(pillars['a'][name])} → {_ms(pillars['b'][name])} ({_signed_ms(moves[name])})"
             )
             for name in shown
+        ]
+        reading.append(
+            ("按类型拆分：" if zh else "By kind: ")
+            + ("，" if zh else "; ").join(items)
+            + ("。" if zh else ".")
         )
-        + ("。" if zh else ".")
-    )
+    else:
+        items = []
+        for name in shown:
+            target, after = factor * pillars["a"][name], pillars["b"][name]
+            over = after >= target
+            items.append(
+                f"{names[name]} {_ms(pillars['a'][name])} → {_ms(after)}（目标 {_ms(target)}，{'多' if over else '少'} {_ms(abs(after - target))}）"
+                if zh
+                else f"{names[name]} {_ms(pillars['a'][name])} → {_ms(after)} (target {_ms(target)}, "
+                f"{_ms(abs(after - target))} {'over' if over else 'under'})"
+            )
+        reading.append(
+            ("每类时间 A → B：" if zh else "Each kind, A → B: ")
+            + ("；" if zh else "; ").join(items)
+            + ("。" if zh else ".")
+        )
     worse = [name for name in shown if moves[name] >= max(100.0, 0.05 * abs(delta))]
     better = [name for name in shown if moves[name] <= -max(100.0, 0.05 * abs(delta))]
 
+    def trend(name: str) -> str:
+        before, after = pillars["a"][name], pillars["b"][name]
+        if before < 1:
+            return "A 没有这一项" if zh else "none in A"
+        ratio = after / before
+        if ratio >= 1.05:
+            return (
+                f"不降反升，{_ms(before)} → {_ms(after)}"
+                if zh
+                else f"grows instead of shrinking, {_ms(before)} → {_ms(after)}"
+            )
+        if ratio > 0.95:
+            return (
+                f"基本不变，{_ms(before)} → {_ms(after)}"
+                if zh
+                else f"barely changes, {_ms(before)} → {_ms(after)}"
+            )
+        if ratio > factor:
+            return (
+                f"只降到 ×{ratio:.2f}，理想 ×{factor:.2f}"
+                if zh
+                else f"shrinks only to ×{ratio:.2f}, ideal ×{factor:.2f}"
+            )
+        return (
+            f"降到 ×{ratio:.2f}，好于理想 ×{factor:.2f}"
+            if zh
+            else f"shrinks to ×{ratio:.2f}, better than the ideal ×{factor:.2f}"
+        )
+
     def listed(items: list[str]) -> str:
+        ordered = sorted(items, key=lambda name: -abs(moves[name]))
+        if not same:
+            return ("；" if zh else "; ").join(
+                (
+                    f"{names[name]} {_signed_ms(moves[name])}（{trend(name)}）"
+                    if zh
+                    else f"{names[name]} {_signed_ms(moves[name])} ({trend(name)})"
+                )
+                for name in ordered
+            )
         return ("、" if zh else " and ").join(
             (
                 f"{names[name]}（{_signed_ms(moves[name])}）"
                 if zh
                 else f"{names[name]} ({_signed_ms(moves[name])})"
             )
-            for name in sorted(items, key=lambda name: -abs(moves[name]))
+            for name in ordered
         )
 
     main, offset = (worse, better) if delta > 0 else (better, worse)
     if main:
-        if zh:
-            text = (
-                f"{'B 变慢' if delta > 0 else 'B 变快'}主要来自{listed(main)}"
-                if same
-                else f"与线性扩展相比，{'损失' if delta > 0 else '收益'}主要来自{listed(main)}"
-            )
-            text += f"；{listed(offset)}抵消了一部分。" if offset else "。"
+        if same:
+            if zh:
+                text = f"{'B 变慢' if delta > 0 else 'B 变快'}主要来自{listed(main)}"
+                text += f"；{listed(offset)}抵消了一部分。" if offset else "。"
+            else:
+                text = f"B is {'slower' if delta > 0 else 'faster'} mainly because of {listed(main)}"
+                text += (
+                    f"; {listed(offset)} {'offset' if len(offset) > 1 else 'offsets'} part of it."
+                    if offset
+                    else "."
+                )
+        elif zh:
+            text = f"{'超出' if delta > 0 else '低于'}线性目标的 {_ms(abs(delta))} 来自：{listed(main)}"
+            text += f"。另有{listed(offset)}，抵消了一部分。" if offset else "。"
         else:
-            text = (
-                f"B is {'slower' if delta > 0 else 'faster'} mainly because of {listed(main)}"
-                if same
-                else f"Against linear scaling, the {'loss' if delta > 0 else 'gain'} comes mainly from {listed(main)}"
-            )
+            text = f"The {_ms(abs(delta))} {'over' if delta > 0 else 'under'} the linear target comes from: {listed(main)}"
             text += (
-                f"; {listed(offset)} {'offset' if len(offset) > 1 else 'offsets'} part of it."
+                f". {listed(offset)[0].upper()}{listed(offset)[1:]} offsets part of it."
                 if offset
                 else "."
             )
@@ -958,34 +1027,39 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
 
     pillar_names = PILLAR_NAMES[language]
     pillars = p["pillars"]
-    rows = [
+    metrics = [("每 token 时间" if zh else "Time per token", ta_us, tb_us, False)] + [
         (
-            "每 token 时间" if zh else "Time per token",
-            _ms(ta_us),
-            _ms(tb_us),
-            _signed_ms(tb_us - factor * ta_us),
-        ),
-        *(
-            (
-                pillar_names[name] if zh else pillar_names[name].capitalize(),
-                f"{_ms(pillars['a'][name])} ({_pct(pillars['a'][name] / ta_us if ta_us else None)})",
-                f"{_ms(pillars['b'][name])} ({_pct(pillars['b'][name] / tb_us if tb_us else None)})",
-                _signed_ms(pillars["b"][name] - factor * pillars["a"][name]),
-            )
-            for name in pillar_names
-            if max(pillars["a"][name], pillars["b"][name]) >= 1
-        ),
+            pillar_names[name] if zh else pillar_names[name].capitalize(),
+            pillars["a"][name],
+            pillars["b"][name],
+            True,
+        )
+        for name in pillar_names
+        if max(pillars["a"][name], pillars["b"][name]) >= 1
     ]
-    change_head = (
-        ("变化" if same else f"相对 {factor:.3g}×A")
-        if zh
-        else ("Change" if same else f"vs {factor:.3g}×A")
-    )
-    table = [
-        f"| {'指标' if zh else 'Metric'} | A | B | {change_head} |",
-        "|---|---:|---:|---:|",
-        *(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} |" for r in rows),
-    ]
+
+    def timed(value: float, total: float, part: bool) -> str:
+        return (
+            f"{_ms(value)} ({_pct(value / total if total else None)})"
+            if part
+            else _ms(value)
+        )
+
+    head = ["指标" if zh else "Metric", "A", "B"]
+    if same:
+        head.append("变化" if zh else "Change")
+    else:
+        head += [
+            f"线性目标（{factor:.3g}×A）" if zh else f"Linear target ({factor:.3g}×A)",
+            "B − 目标" if zh else "B − target",
+        ]
+    table = ["| " + " | ".join(head) + " |", "|---" + "|---:" * (len(head) - 1) + "|"]
+    for label, before, after, part in metrics:
+        cells = [label, timed(before, ta_us, part), timed(after, tb_us, part)]
+        if not same:
+            cells.append(_ms(factor * before))
+        cells.append(_signed_ms(after - factor * before))
+        table.append("| " + " | ".join(cells) + " |")
 
     recs: list[str] = []
     for side, label, metrics in (("b", "B", mb), ("a", "A", ma)):

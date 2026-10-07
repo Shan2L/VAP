@@ -1116,87 +1116,137 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .bridge {
+    .kind-chart {
       display: grid;
-      gap: 6px;
+      gap: 4px;
     }
 
-    .bridge-row {
+    .kind-group {
       display: grid;
-      grid-template-columns: 190px minmax(0, 1fr) 96px;
+      gap: 3px;
+      padding: 6px 0 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .kind-group.total {
+      padding-top: 0;
+      border-bottom-color: var(--border-strong);
+    }
+
+    .kind-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 2px 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .kind-name {
+      color: var(--text);
+      font-size: 12.5px;
+      font-weight: 600;
+    }
+
+    .kind-name small {
+      margin-left: 8px;
+      color: var(--text-3);
+      font-size: 11px;
+      font-weight: 400;
+    }
+
+    .kind-change {
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .kind-row {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr) 72px;
       gap: 10px;
       align-items: center;
       font-variant-numeric: tabular-nums;
     }
 
-    .bridge-label {
-      display: grid;
-      min-width: 0;
-      color: var(--text);
-      font-size: 12px;
-      font-weight: 600;
-    }
-
-    .bridge-label small {
+    .kind-side {
       overflow: hidden;
-      color: var(--text-3);
+      color: var(--text-2);
       font-size: 11px;
-      font-weight: 400;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .bridge-track {
+    .kind-track {
       position: relative;
-      height: 24px;
+      height: 14px;
     }
 
-    .bridge-bar {
+    .kind-bar,
+    .kind-extra,
+    .kind-saved {
       position: absolute;
-      top: 4px;
-      bottom: 4px;
-      min-width: 0;
-    }
-
-    .bridge-bar + .bridge-bar {
-      box-shadow: inset 1px 0 0 var(--surface);
-    }
-
-    .bridge-step {
-      top: 6px;
-      bottom: 6px;
+      top: 0;
+      bottom: 0;
       border-radius: 2px;
     }
 
-    .bridge-ref,
-    .bridge-guide {
+    .kind-bar {
+      left: 0;
+    }
+
+    .kind-bar.side-a {
+      opacity: 0.5;
+    }
+
+    .kind-total,
+    .swatch.kind-legend-b {
+      background: var(--text-3);
+    }
+
+    .swatch.kind-legend-a {
+      background: var(--text-3);
+      opacity: 0.5;
+    }
+
+    .kind-extra,
+    .swatch.kind-legend-extra {
+      background: repeating-linear-gradient(135deg, var(--danger) 0 3px, transparent 3px 6px);
+      box-shadow: inset 0 0 0 1px var(--danger);
+    }
+
+    .kind-saved,
+    .swatch.kind-legend-saved {
+      border: 1px dashed var(--ok);
+      background: var(--ok-soft);
+    }
+
+    .kind-ref {
       position: absolute;
       top: -3px;
       bottom: -3px;
-      border-left: 1px dashed var(--border-strong);
+      margin-left: -1px;
+      border-left: 2px solid var(--text);
       pointer-events: none;
     }
 
-    .bridge-ref {
-      border-left-color: var(--text-3);
+    .swatch.kind-legend-ref {
+      width: 0;
+      border-left: 2px solid var(--text);
+      border-radius: 0;
     }
 
-    .bridge-value {
+    .kind-value {
+      color: var(--text-2);
       font-size: 12px;
-      font-weight: 600;
       text-align: right;
     }
 
-    .bridge-value.anchor {
+    .kind-value.strong {
       color: var(--text);
+      font-weight: 600;
     }
 
-    .bridge-value.muted {
-      color: var(--text-3);
-      font-weight: 500;
-    }
-
-    .bridge-axis,
+    .kind-axis,
     .tl-axis {
       position: relative;
       height: 18px;
@@ -1206,7 +1256,7 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .bridge-axis span,
+    .kind-axis span,
     .tl-axis span {
       position: absolute;
       top: 3px;
@@ -1214,35 +1264,9 @@
       white-space: nowrap;
     }
 
-    .bridge-axis span:first-child,
+    .kind-axis span:first-child,
     .tl-axis span:first-child {
       transform: none;
-    }
-
-    .bridge {
-      container-type: inline-size;
-    }
-
-    @container (max-width: 560px) {
-      .bridge-row {
-        grid-template-columns: minmax(0, 1fr) 72px;
-        row-gap: 2px;
-      }
-
-      .bridge-label {
-        grid-column: 1 / -1;
-        grid-template-columns: auto minmax(0, 1fr);
-        gap: 8px;
-        align-items: baseline;
-      }
-
-      .bridge-row > span:first-child:empty {
-        display: none;
-      }
-
-      .bridge-axis span:nth-child(even) {
-        display: none;
-      }
     }
 
     .rank-bars {
@@ -2803,8 +2827,8 @@
         grid-template-columns: 96px minmax(0, 1fr) 64px;
       }
 
-      .bridge-row {
-        grid-template-columns: 112px minmax(0, 1fr) 72px;
+      .kind-row {
+        grid-template-columns: 72px minmax(0, 1fr) 64px;
       }
 
       .tl-lane {
@@ -3088,7 +3112,7 @@
                 <p class="analysis-sub" id="analysis-bridge-sub"></p>
               </div>
             </div>
-            <div class="bridge" id="analysis-bridge"></div>
+            <div class="kind-chart" id="analysis-bridge"></div>
             <div class="viz-legend" id="analysis-bridge-legend"></div>
             <div class="chart-note" id="analysis-note-bridge" hidden></div>
           </section>
@@ -4457,7 +4481,16 @@
       };
       const kpis = [];
       const [roundText, roundClass] = versus(roundA, roundB);
-      kpis.push({ label: "Time per token", a: fmtMs(roundA), b: fmtMs(roundB), delta: roundText, cls: roundClass, share: "mean over the GPUs, comparable to TPOT" });
+      kpis.push({
+        label: "Time per token",
+        a: fmtMs(roundA),
+        b: fmtMs(roundB),
+        delta: roundText,
+        cls: roundClass,
+        share: same
+          ? "mean over the GPUs, comparable to TPOT"
+          : `B − A ${fmtSigned((roundB - roundA) / 1000, 2, " ms")} (${fmtSigned(100 * (roundB - roundA) / roundA, 1, "%")})`,
+      });
       if (!same) {
         kpis.push({
           label: "Speedup",
@@ -4512,71 +4545,51 @@
       const same = comparison.mode === "same_gpus";
       const factor = comparisonFactor(comparison);
       const pillars = phase.pillars;
-      const start = pillarTotal(pillars.a, factor);
-      const end = pillarTotal(pillars.b);
-      const measuredA = pillarTotal(pillars.a);
-      const steps = PILLAR_KEYS
-        .map(([key, name, cls]) => ({ name, cls, a: factor * (pillars.a[key] || 0), b: pillars.b[key] || 0 }))
-        .filter((step) => step.a >= 1 || step.b >= 1);
-      let level = start;
-      for (const step of steps) {
-        step.from = level;
-        level += step.b - step.a;
-        step.to = level;
-      }
-      const scale = 1.04 * Math.max(1, measuredA, end, ...steps.flatMap((step) => [step.from, step.to]));
+      const share = `${comparison.a.gpus}/${comparison.b.gpus}`;
+      const reference = same ? "A" : "the target";
+      const groups = [
+        { name: "Time per token", cls: "kind-total", a: pillarTotal(pillars.a), b: pillarTotal(pillars.b) },
+        ...PILLAR_KEYS
+          .map(([key, name, cls]) => ({ name: `${name} per GPU`, cls, a: pillars.a[key] || 0, b: pillars.b[key] || 0 }))
+          .filter((group) => group.a >= 1 || group.b >= 1),
+      ];
+      const scale = 1.04 * Math.max(1, ...groups.flatMap((group) => [group.a, group.b]));
       const position = (value) => `${(100 * value / scale).toFixed(3)}%`;
-      const stacked = (values, mult) => {
-        let left = 0;
-        return PILLAR_KEYS.map(([key, name, cls]) => {
-          const value = mult * (values[key] || 0);
-          if (value <= 0) return "";
-          const bar = `<span class="bridge-bar ${cls}" style="left:${position(left)};width:${position(value)}" title="${escapeAttr(`${name}: ${fmtMs(value)}`)}"></span>`;
-          left += value;
-          return bar;
-        }).join("");
-      };
-      const reference = `<i class="bridge-ref" style="left:${position(start)}"></i>`;
-      const row = (label, detail, track, value, tone) => `<div class="bridge-row">`
-        + `<span class="bridge-label">${escapeHtml(label)}<small>${escapeHtml(detail)}</small></span>`
-        + `<span class="bridge-track">${reference}${track}</span>`
-        + `<span class="bridge-value ${tone}">${escapeHtml(value)}</span></div>`;
-      const ratio = `${comparison.a.gpus}/${comparison.b.gpus}`;
-      const rows = [];
-      if (!same) {
-        rows.push(row(`A · ${comparison.a.parallel}`, `measured on ${comparison.a.gpus} GPUs`, stacked(pillars.a, 1), fmtMs(measuredA), "muted"));
-      }
-      rows.push(row(
-        same ? `A · ${comparison.a.parallel}` : `Linear target · ${factor}×A`,
-        same ? "time per token" : `A's time × ${ratio} GPUs`,
-        stacked(pillars.a, factor),
-        fmtMs(start),
-        "anchor",
-      ));
-      for (const step of steps) {
-        const change = step.to - step.from;
+      const rows = groups.map((group, index) => {
+        const target = factor * group.a;
+        const change = group.b - target;
         const tone = Math.abs(change) < 5 ? "delta-flat" : change > 0 ? "delta-worse" : "delta-better";
-        const bar = `<i class="bridge-guide" style="left:${position(step.from)}"></i>`
-          + `<span class="bridge-bar bridge-step ${step.cls}" style="left:${position(Math.min(step.from, step.to))};width:max(2px, ${position(Math.abs(change))})"`
-          + ` title="${escapeAttr(`${step.name}: ${fmtMs(step.a)} → ${fmtMs(step.b)}`)}"></span>`;
-        rows.push(row(step.name, `${fmtMs(step.a)} → ${fmtMs(step.b)}`, bar, fmtSigned(change / 1000, 2, " ms"), tone));
-      }
-      rows.push(row(`B · ${comparison.b.parallel}`, "time per token", stacked(pillars.b, 1), fmtMs(end), "anchor"));
-      rows.push(`<div class="bridge-row"><span></span><span class="bridge-axis">${axisTicks(scale, position)}</span><span></span></div>`);
+        const ratio = group.a >= 1 ? `B ÷ A ×${(group.b / group.a).toFixed(2)}${same ? "" : ` · linear ×${factor.toFixed(2)}`}` : "";
+        const changeText = same ? fmtSigned(change / 1000, 2, " ms") : `${fmtSigned(change / 1000, 2, " ms")} vs target ${fmtMs(target)}`;
+        const gap = change > 0
+          ? `<span class="kind-extra" style="left:${position(target)};width:${position(change)}" title="${escapeAttr(`B above ${reference}: ${fmtMs(change)}`)}"></span>`
+          : change < 0
+            ? `<span class="kind-saved" style="left:${position(group.b)};width:${position(-change)}" title="${escapeAttr(`B below ${reference}: ${fmtMs(-change)}`)}"></span>`
+            : "";
+        const marker = `<i class="kind-ref" style="left:${position(target)}" title="${escapeAttr(same ? `A: ${fmtMs(group.a)}` : `Linear target, A × ${share}: ${fmtMs(target)}`)}"></i>`;
+        const row = (letter, head, track, value, strong) => `<div class="kind-row"><span class="kind-side">${escapeHtml(`${letter} · ${head.parallel}`)}</span>`
+          + `<span class="kind-track">${track}</span><span class="kind-value${strong ? " strong" : ""}">${fmtMs(value)}</span></div>`;
+        return `<div class="kind-group${index === 0 ? " total" : ""}">`
+          + `<div class="kind-head"><span class="kind-name">${escapeHtml(group.name)}${ratio ? `<small>${escapeHtml(ratio)}</small>` : ""}</span>`
+          + `<span class="kind-change ${tone}">${escapeHtml(changeText)}</span></div>`
+          + row("A", comparison.a, `<span class="kind-bar side-a ${group.cls}" style="width:${position(group.a)}"></span>`, group.a, false)
+          + row("B", comparison.b, `<span class="kind-bar ${group.cls}" style="width:${position(Math.min(group.b, target))}"></span>${gap}${marker}`, group.b, true)
+          + "</div>";
+      });
+      rows.push(`<div class="kind-row"><span></span><span class="kind-axis">${axisTicks(scale, position)}</span><span></span></div>`);
       document.getElementById("analysis-bridge").innerHTML = rows.join("");
-      const slower = end > start;
+      const slower = groups[0].b > factor * groups[0].a;
       document.getElementById("analysis-bridge-title").textContent = same
         ? `Why B is ${slower ? "slower" : "faster"}`
         : `Why B ${slower ? "falls short of" : "beats"} linear scaling`;
-      document.getElementById("analysis-bridge-sub").textContent = (same
-        ? "Starting from A's time per token"
-        : `Starting from the linear-scaling target (A's time × ${ratio})`)
-        + ", each row adds the change of one kind of time until it reaches B. Milliseconds per generated token, mean over the GPUs.";
-      const used = PILLAR_KEYS.filter(([key]) => (pillars.a[key] || 0) >= 1 || (pillars.b[key] || 0) >= 1);
-      document.getElementById("analysis-bridge-legend").innerHTML = used
-        .map(([, name, cls]) => `<span><i class="swatch ${cls}"></i>${escapeHtml(name)}</span>`).join("")
-        + `<span><i class="swatch stage"></i>${same ? "A's time per token" : "Linear-scaling target"}</span>`
-        + '<span><b class="delta-worse">+</b>B spends more time</span><span><b class="delta-better">−</b>B spends less time</span>';
+      document.getElementById("analysis-bridge-sub").textContent = same
+        ? "Milliseconds per generated token, mean over the GPUs: the total and each kind of time, B against A"
+        : `Milliseconds per generated token, mean over the GPUs: the total and each kind of time, B against the linear-scaling target (A × ${share})`;
+      document.getElementById("analysis-bridge-legend").innerHTML = '<span><i class="swatch kind-legend-a"></i>A (faded)</span>'
+        + '<span><i class="swatch kind-legend-b"></i>B (solid)</span>'
+        + `<span><i class="swatch kind-legend-ref"></i>${same ? "A's value" : `Linear target = A × ${share}`}</span>`
+        + `<span><i class="swatch kind-legend-extra"></i>B above ${escapeHtml(reference)}</span>`
+        + `<span><i class="swatch kind-legend-saved"></i>B below ${escapeHtml(reference)}</span>`;
     }
 
     function partsRow(label, parts, values, scale) {
