@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import tempfile
 import unittest
@@ -27,6 +28,15 @@ class LayerOverlapToolTests(unittest.TestCase):
         patcher = patch.object(settings, "LOGS_DIR", self.logs)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def current_run(self, run_dir: Path) -> contextlib.ExitStack:
+        snapshot = {"run_dir": str(run_dir), "started_at": None}
+        stack = contextlib.ExitStack()
+        for module in (server, artifacts):
+            stack.enter_context(
+                patch.object(module, "get_run_state_snapshot", return_value=snapshot)
+            )
+        return stack
 
     def make_run(self, name: str, ranks: int, late_attention: float = 0.0) -> Path:
         run_dir = self.logs / name
@@ -138,11 +148,7 @@ class LayerOverlapToolTests(unittest.TestCase):
             for index in range(5000)
         ]
         (run_dir / "vllm_deploy.log").write_text("\n".join(lines))
-        snapshot = {"run_dir": str(run_dir), "started_at": None}
-        with (
-            patch.object(server, "get_run_state_snapshot", return_value=snapshot),
-            patch.object(artifacts, "get_run_state_snapshot", return_value=snapshot),
-        ):
+        with self.current_run(run_dir):
             tail = server.read_log_tail(
                 {"file_name": "vllm_deploy.log", "max_chars": 1000}
             )
@@ -151,12 +157,34 @@ class LayerOverlapToolTests(unittest.TestCase):
             )
             viewed = artifacts.read_current_log_file("vllm_deploy.log", max_bytes=2000)
         self.assertTrue(tail["truncated"])
+        self.assertTrue(tail["content"].startswith("line "))
         self.assertTrue(tail["content"].endswith("line 4999 ok"))
         self.assertLessEqual(len(tail["content"]), 1000)
         self.assertEqual(errors["matched_lines"], 50)
         self.assertNotIn(" ok", errors["content"])
         self.assertTrue(viewed["truncated"])
+        self.assertTrue(viewed["content"].startswith("line "))
         self.assertLessEqual(len(viewed["content"]), 2000)
+
+    def test_log_tails_start_at_a_whole_line(self) -> None:
+        run_dir = self.make_run("run_tp2", 2)
+        (run_dir / "vllm_deploy.log").write_bytes("αβ\nline 1\nline 2\n".encode())
+        with self.current_run(run_dir):
+            reads = {
+                window: artifacts.read_current_log_file(
+                    "vllm_deploy.log", max_bytes=len(window.encode())
+                )
+                for window in (
+                    "line 1\nline 2\n",
+                    "ne 1\nline 2\n",
+                    "β\nline 1\nline 2\n",
+                )
+            }
+        # The last window starts inside the two-byte "β".
+        self.assertEqual(
+            [(read["content"], read["start_offset"]) for read in reads.values()],
+            [("line 1\nline 2\n", 5), ("line 2\n", 12), ("line 1\nline 2\n", 5)],
+        )
 
     def test_attribution_file_only_serves_regular_report_files(self) -> None:
         run_dir = self.make_run("run_tp2", 2)

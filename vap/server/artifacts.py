@@ -107,9 +107,18 @@ def read_current_log_file(
     if log_path.is_file() and log_path.is_relative_to(settings.LOGS_DIR.resolve()):
         size_bytes = log_path.stat().st_size
         start_offset = max(0, size_bytes - max_bytes) if max_bytes is not None else 0
+        read_from = max(0, start_offset - 1)
         with log_path.open("rb") as log_file:
-            log_file.seek(start_offset)
-            content = log_file.read().decode("utf-8", errors="replace")
+            log_file.seek(read_from)
+            data = log_file.read()
+        if start_offset:
+            # Begin at a line start, never inside a line or a UTF-8 character;
+            # a window that is all one line keeps its bytes.
+            newline = data.find(b"\n")
+            cut = newline + 1 if newline != -1 else 1
+            data = data[cut:]
+            start_offset = read_from + cut
+        content = data.decode("utf-8", errors="replace")
         return {
             "exists": True,
             "name": file_name,

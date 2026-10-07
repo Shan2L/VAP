@@ -390,9 +390,11 @@ def read_log_tail(args: dict[str, Any]) -> dict[str, Any]:
         matches = [line for line in text.splitlines() if needle in line.lower()]
         log["matched_lines"] = len(matches)
         text = "\n".join(matches)
-    log.pop("truncated", None)
     log["truncated"] = len(text) > max_chars
-    log["content"] = text[-max_chars:]
+    if log["truncated"]:
+        text = text[-max_chars:]
+        text = text[text.find("\n") + 1 :]
+    log["content"] = text
     return log
 
 
