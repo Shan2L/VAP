@@ -2763,7 +2763,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     analyze_parser = subparsers.add_parser("analyze", help="Attribute one run")
-    analyze_parser.add_argument("trace_dir", type=Path)
+    analyze_parser.add_argument(
+        "trace_dir", type=Path, help="Run directory or its vllm-profile directory"
+    )
     analyze_parser.add_argument(
         "--num-layers",
         type=int,
@@ -2786,10 +2788,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "analyze":
-        files = find_trace_files(args.trace_dir)
+        profile_dir = args.trace_dir
+        if (profile_dir / "vllm-profile").is_dir():
+            profile_dir = profile_dir / "vllm-profile"
+        files, timeline = select_trace_files(profile_dir)
         if not files:
             parser.error(f"No PyTorch trace files under {args.trace_dir}")
-        info = run_model_info(args.trace_dir.resolve().parent)
+        info = run_model_info(profile_dir.resolve().parent)
         num_layers = args.num_layers or info["num_layers"]
         if not num_layers:
             parser.error(
@@ -2803,12 +2808,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         layout = Layout(num_layers, args.comms_per_layer, args.pre_comms)
         result = analyze(files, layout, topology, args.violation_tolerance_us)
         result["meta"].update(
-            trace_dir=str(args.trace_dir),
+            trace_dir=str(profile_dir),
+            timeline=timeline,
             model=info["model"],
             concurrency=info["concurrency"],
             bench=info["bench"],
         )
-        outputs = write_analysis(result, args.out or args.trace_dir / "attribution")
+        outputs = write_analysis(result, args.out or profile_dir / "attribution")
         print(json.dumps({"outputs": outputs, "summary": brief(result)}, indent=2))
     else:
         base = json.loads(args.base.read_text(encoding="utf-8"))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from unittest.mock import patch
 from test_trace_attribution import rank_trace, step_kernels, write_traces
 from vap.agent import tools as agent_tools
 from vap.agent.runtime import VAPAgentRuntime
+from vap.analysis import attribution
 from vap.server import analysis as server
 from vap.server import artifacts, settings
 
@@ -185,6 +187,18 @@ class LayerOverlapToolTests(unittest.TestCase):
             [(read["content"], read["start_offset"]) for read in reads.values()],
             [("line 1\nline 2\n", 5), ("line 2\n", 12), ("line 1\nline 2\n", 5)],
         )
+
+    def test_cli_accepts_the_run_directory(self) -> None:
+        run_dir = self.make_run("run_tp2", 2)
+        results = []
+        for target in (run_dir, run_dir / "vllm-profile"):
+            out = self.logs / f"cli_{len(results)}"
+            with contextlib.redirect_stdout(io.StringIO()):
+                attribution.main(["analyze", str(target), "--out", str(out)])
+            data = json.loads((out / "attribution.json").read_text(encoding="utf-8"))
+            results.append(data)
+        self.assertEqual(results[0]["meta"]["timeline"], "raw")
+        self.assertEqual(results[0]["phases"], results[1]["phases"])
 
     def test_attribution_file_only_serves_regular_report_files(self) -> None:
         run_dir = self.make_run("run_tp2", 2)
