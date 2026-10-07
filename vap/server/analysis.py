@@ -146,6 +146,7 @@ def run_attribution(
         trace_dir=str(profile_dir),
         concurrency=info["concurrency"],
         bench=info["bench"],
+        model_shape=info["model_shape"],
     )
     outputs = ta.write_analysis(result, run_dir / "attribution")
     return result, outputs, cached is not None
@@ -273,11 +274,15 @@ def report_stream(args: dict[str, Any]) -> Iterator[dict[str, Any]]:
         attribution_download(target_dir, pair["outputs"]["csv"], "per-layer A/B (CSV)"),
         attribution_download(target_dir, pair["outputs"]["json"], "comparison (JSON)"),
     ]
+    page = ar.report_data(
+        comparison, pair["base"], pair["target"], include_timeline=True
+    )
     yield {
         "type": "data",
         "base_run": pair["base_dir"].name,
         "target_run": target_dir.name,
-        "comparison": ta.compare_summary(comparison),
+        "comparison": ta.compare_summary(comparison, include_timeline=True),
+        "notes": ar.chart_notes(page, language),
     }
     runtime = get_agent_runtime()
     agent_ready = runtime.status()["unlocked"]
@@ -361,7 +366,31 @@ def compare_runs(args: dict[str, Any]) -> dict[str, Any]:
     payload = compare_two_runs(args, include_layers=False)[0]
     for phase in payload["comparison"]["phases"].values():
         phase["kernels"] = phase["kernels"][:6]
-        phase.pop("round", None)
+        for key in ("round", "layer_sum", "non_layer", "parts", "groups"):
+            phase.pop(key, None)
+        phase["stages"] = {
+            side: [
+                {
+                    "stage": stage["stage"],
+                    "ranks": stage["ranks"],
+                    "layers": stage["layers"],
+                    **ta._rounded(ta._pillars(stage["round"])),
+                }
+                for stage in stages
+            ]
+            for side, stages in phase["stages"].items()
+        }
+        phase["ranks"] = {
+            side: [
+                {
+                    "rank": row["rank"],
+                    "stage": row["stage"],
+                    **ta._rounded(ta._pillars(row["values"])),
+                }
+                for row in rows
+            ]
+            for side, rows in phase["ranks"].items()
+        }
     payload["runs"] = [
         {key: run[key] for key in ("run", "parallel", "quality", "findings")}
         for run in payload["runs"]

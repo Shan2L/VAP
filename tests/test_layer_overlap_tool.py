@@ -12,6 +12,7 @@ from test_trace_attribution import rank_trace, step_kernels, write_traces
 from vap.agent import tools as agent_tools
 from vap.agent.runtime import VAPAgentRuntime
 from vap.analysis import attribution
+from vap.analysis import report as analysis_report
 from vap.server import analysis as server
 from vap.server import artifacts, settings
 
@@ -96,7 +97,20 @@ class LayerOverlapToolTests(unittest.TestCase):
             (data["comparison"]["a"]["parallel"], data["comparison"]["b"]["parallel"]),
             ("TP2", "TP4"),
         )
-        self.assertNotIn("layers", data["comparison"]["phases"]["decode"])
+        decode = data["comparison"]["phases"]["decode"]
+        self.assertNotIn("layers", decode)
+        # The agent gets the four kinds of time per GPU and stage, not the
+        # per-category breakdowns or the token timeline of the page.
+        for key in ("round", "layer_sum", "non_layer", "parts", "groups", "timeline"):
+            self.assertNotIn(key, decode)
+        pillars = {"compute", "communication", "pipeline", "idle"}
+        self.assertEqual(set(decode["pillars"]["a"]), pillars)
+        self.assertEqual(set(decode["ranks"]["b"][0]) - {"rank", "stage"}, pillars)
+        self.assertEqual(
+            set(decode["stages"]["a"][0]) - {"stage", "ranks", "layers"}, pillars
+        )
+        self.assertEqual((decode["work"]["a"]["tp"], decode["work"]["b"]["tp"]), (2, 4))
+        self.assertLess(len(json.dumps(data, ensure_ascii=False)), 16000)
         for suffix in (".md", ".html", "_layers.csv", ".json"):
             self.assertTrue(
                 (
@@ -264,6 +278,19 @@ class LayerOverlapToolTests(unittest.TestCase):
         kinds = [event["type"] for event in events]
         self.assertEqual(kinds[:2], ["status", "data"])
         self.assertIn("notice", kinds)
+        notes = events[1]["notes"]
+        self.assertEqual(
+            notes["labels"], {"what": "这张图表示", "reading": "当前数值说明"}
+        )
+        for key in ("bridge", "compute", "communication", "timeline", "layers"):
+            self.assertTrue(notes[key]["what"], key)
+        self.assertIn("ms", notes["bridge"]["reading"][0])
+        timeline = events[1]["comparison"]["phases"]["decode"]["timeline"]
+        for side in ("a", "b"):
+            self.assertEqual(len(timeline[side]["ranks"]), 2)
+            spans = timeline[side]["ranks"][0]["spans"]
+            self.assertEqual(spans[0][0], 0.0)
+            self.assertAlmostEqual(spans[-1][1], timeline[side]["window_us"], delta=0.1)
         report = events[-1]
         self.assertEqual(
             (report["type"], report["source"], report["cached"]),
@@ -282,6 +309,8 @@ class LayerOverlapToolTests(unittest.TestCase):
         for heading in (
             "## 结论",
             "## 关键指标",
+            "## 单卡计算开销",
+            "## 通信模式开销",
             "## 优化建议",
             "# 附录：完整数据",
             "#### Time per layer",
@@ -339,6 +368,30 @@ class LayerOverlapToolTests(unittest.TestCase):
         self.assertIn(
             "did not follow the template",
             " ".join(e.get("message", "") for e in events),
+        )
+
+    def test_kernel_note_explains_raw_communication_kernel_time(self) -> None:
+        data = {"a": {"parallel": "TP4"}, "b": {"parallel": "TP2×PP2"}}
+        phase = {
+            "kernels": [
+                {"kind": "comm", "name": "nccl", "a_us": 10000.0, "b_us": 20000.0},
+                {"kind": "gemm", "name": "gemm", "a_us": 9000.0, "b_us": 15000.0},
+            ],
+            "pillars": {
+                "a": {"communication": 10000.0, "pipeline": 0.0},
+                "b": {"communication": 4000.0, "pipeline": 4000.0},
+            },
+        }
+        for row in phase["kernels"]:
+            row["change_us"] = row["b_us"] - row["a_us"]
+        reading = analysis_report._kernel_notes(data, phase, zh=False)["reading"]
+        # A's communication kernels are all exposed; B's receive kernels start
+        # early and wait while the GPU computes.
+        self.assertEqual(len(reading), 2)
+        self.assertIn(
+            "B (TP2×PP2)'s communication kernels run 20.00 ms in total, but "
+            "communication and pipeline wait take only 8.00 ms",
+            reading[1],
         )
 
     def test_report_rejects_unknown_languages(self) -> None:

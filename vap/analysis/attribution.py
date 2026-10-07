@@ -28,7 +28,8 @@ from typing import Any, Sequence
 
 from vap.postprocess.fuse import load_trace
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+TIMELINE_BINS = 1200
 HIDING = ("gemm", "attention", "other")
 COMPUTE = (*HIDING, "memcpy")
 COMM = ("comm_wait", "comm_xfer", "comm_unmatched")
@@ -740,6 +741,114 @@ def _accumulate(totals: dict[str, float], active: Counter[str], span: float) -> 
         totals["idle"] += span
 
 
+def _timeline_class(active: Counter[str]) -> str:
+    """The category _accumulate gives an instant, as one display class."""
+    if any(active[kind] > 0 for kind in HIDING):
+        if any(active[kind] > 0 for kind in (*COMM, "pp_xfer")):
+            return "overlap"
+        return "compute"
+    if active["comm_xfer"] > 0 or active["comm_unmatched"] > 0:
+        return "comm_xfer"
+    if active["comm_wait"] > 0:
+        return "comm_wait"
+    if active["pp_xfer"] > 0:
+        return "pp_xfer"
+    if active["memcpy"] > 0:
+        return "compute"
+    if active["pp_wait"] > 0:
+        return "bubble"
+    return "idle"
+
+
+def timeline_spans(
+    intervals: Sequence[tuple[float, float, str]],
+    low: float,
+    high: float,
+    bins: int = TIMELINE_BINS,
+) -> list[list[Any]]:
+    """[start, end, class] runs over [low, high), in µs from low; each of
+    `bins` equal slices takes the class that fills most of it."""
+    events: list[tuple[float, int, str]] = []
+    for start, end, kind in intervals:
+        start, end = max(start, low), min(end, high)
+        if end > start:
+            events.append((start, 1, kind))
+            events.append((end, -1, kind))
+    events.sort(key=lambda event: (event[0], event[1]))
+    width = (high - low) / bins if high > low else 0.0
+    if not width:
+        return []
+    filled: list[Counter[str]] = [Counter() for _ in range(bins)]
+
+    def paint(start: float, end: float, kind: str) -> None:
+        first = min(bins - 1, int((start - low) / width))
+        last = min(bins - 1, int((end - low) / width))
+        for index in range(first, last + 1):
+            left = max(start, low + index * width)
+            right = min(end, low + (index + 1) * width)
+            if right > left:
+                filled[index][kind] += right - left
+
+    active: Counter[str] = Counter()
+    cursor = low
+    for time, delta, kind in events:
+        if time > cursor:
+            paint(cursor, time, _timeline_class(active))
+            cursor = time
+        active[kind] += delta
+    if high > cursor:
+        paint(cursor, high, _timeline_class(active))
+    runs: list[list[Any]] = []
+    for index, counts in enumerate(filled):
+        kind = counts.most_common(1)[0][0] if counts else "idle"
+        if runs and runs[-1][2] == kind:
+            runs[-1][1] = (index + 1) * width
+        else:
+            runs.append([index * width, (index + 1) * width, kind])
+    return [[round(start, 1), round(end, 1), kind] for start, end, kind in runs]
+
+
+def _token_timeline(
+    groups: Sequence[Sequence[Step]],
+    ranks: Sequence[RankTrace],
+    engine: Topology,
+    pp_floor: dict[tuple[str, tuple[int, ...] | None], float],
+) -> dict[str, Any] | None:
+    """The window of `engine.pp` consecutive steps (one token for a full
+    pipeline) whose length is closest to the median, for every rank."""
+    size = max(1, engine.pp)
+    windows = [groups[index : index + size] for index in range(len(groups) - size + 1)]
+    if not windows:
+        return None
+
+    def span(window: Sequence[Sequence[Step]]) -> tuple[float, float]:
+        steps = [step for group in window for step in group]
+        return min(step.start for step in steps), max(step.end for step in steps)
+
+    lengths = [high - low for low, high in map(span, windows)]
+    middle = statistics.median(lengths)
+    chosen = min(range(len(windows)), key=lambda index: abs(lengths[index] - middle))
+    low, high = span(windows[chosen])
+    intervals: dict[int, list[tuple[float, float, str]]] = defaultdict(list)
+    for group in windows[chosen]:
+        waits = match_collectives(group, ranks, engine)[0]
+        for rank, step in zip(ranks, group):
+            intervals[rank.rank].extend(step_intervals(step, waits, pp_floor))
+    return {
+        "window_us": round(high - low, 1),
+        "steps": size,
+        "median_of": len(windows),
+        "ranks": [
+            {
+                "rank": rank.rank,
+                "stage": engine.stage(rank.rank),
+                "spans": timeline_spans(intervals[rank.rank], low, high),
+            }
+            for rank in ranks
+        ],
+    }
+
+
 def derived_metrics(values: dict[str, float]) -> dict[str, float | None]:
     total = sum(values[category] for category in CATEGORIES)
     exposed = sum(values[category] for category in EXPOSED)
@@ -1035,6 +1144,9 @@ def analyze(
             )
         step_series[phase].append(statistics.fmean(rank_totals))
 
+    by_phase: dict[str, list[Sequence[Step]]] = defaultdict(list)
+    for group in complete:
+        by_phase[group[0].phase].append(group)
     stage_of = {rank.rank: engine.stage(rank.rank) for rank in ranks}
     order = [label for plan in plans for label in plan.labels()]
     phases: dict[str, Any] = {}
@@ -1084,6 +1196,7 @@ def analyze(
             "collectives": _collective_summary(collectives[phase], rank_steps),
             "kernels": _phase_kernels(phase_kernels[phase], rank_steps),
             "step_us_series": [round(value, 1) for value in step_series[phase]],
+            "token_timeline": _token_timeline(by_phase[phase], ranks, engine, pp_floor),
         }
 
     all_records = [record for records in collectives.values() for record in records]
@@ -1293,6 +1406,93 @@ def _non_layer(data: dict[str, Any]) -> dict[str, float]:
     return _mean(samples)
 
 
+PILLARS = (
+    ("compute", (*COMPUTE, "overlap")),
+    ("communication", COMM),
+    ("pipeline", ("pp_xfer", "bubble")),
+    ("idle", ("idle",)),
+)
+PILLAR_LABELS = {
+    "compute": "compute",
+    "communication": "communication",
+    "pipeline": "pipeline wait",
+    "idle": "idle",
+}
+
+
+def _pillars(values: dict[str, float]) -> dict[str, float]:
+    """Compute (including time when communication runs under it), exposed
+    communication, waiting on another pipeline stage, and idle GPU time."""
+    return {name: sum(values[c] for c in members) for name, members in PILLARS}
+
+
+def _rank_rows(data: dict[str, Any], spr: float) -> list[dict[str, Any]]:
+    stage_of = {
+        rank: stage["stage"]
+        for stage in data.get("stages") or []
+        for rank in stage["ranks"]
+    }
+    return [
+        {
+            "rank": int(rank),
+            "stage": stage_of.get(int(rank), 0),
+            "values": _scaled(values, spr),
+        }
+        for rank, values in sorted(
+            data["per_rank"][STEP_KEY].items(), key=lambda item: int(item[0])
+        )
+    ]
+
+
+def work_model(result: dict[str, Any], phase: str) -> dict[str, Any]:
+    """What one GPU reads per generated token under the parallel layout: its
+    share of the decoder weights (decode GEMMs are bound by weight reads) and
+    of the KV cache (attention), and the estimated size of one TP all-reduce
+    of hidden states."""
+    meta, data = result["meta"], result["phases"][phase]
+    topology = meta.get("topology") or {"tp": meta["world_size"]}
+    tp, pp, dp = (topology.get(key) or 1 for key in ("tp", "pp", "dp"))
+    spr = steps_per_round(result, phase)
+    shape = meta.get("model_shape") or {}
+    num_layers = (meta.get("layout") or {}).get("num_layers")
+    stages = [
+        {
+            "stage": stage["stage"],
+            "gpus": len(stage["ranks"]),
+            "layers": stage["layers"][1] - stage["layers"][0],
+        }
+        for stage in data.get("stages") or []
+    ]
+    gpus = sum(stage["gpus"] for stage in stages)
+    layer_fraction = (
+        sum(stage["gpus"] * stage["layers"] for stage in stages) / gpus / num_layers
+        if gpus and num_layers
+        else 1 / pp
+    )
+    kv_heads = shape.get("kv_heads")
+    kv_split = max(1 / tp, 1 / kv_heads) if kv_heads else 1 / tp
+    sequences = data.get("sequences_per_step") or 0
+    concurrency = meta.get("concurrency")
+    sequence_fraction = (
+        min(1.0, sequences * spr / concurrency) if concurrency and sequences else 1 / dp
+    )
+    hidden, width = shape.get("hidden_size"), shape.get("dtype_bytes")
+    return {
+        "tp": tp,
+        "pp": pp,
+        "dp": dp,
+        "steps_per_token": spr,
+        "sequences_per_step": sequences,
+        "stages": stages,
+        "layers_per_gpu": layer_fraction * num_layers if num_layers else None,
+        "weight_share": layer_fraction / tp * spr,
+        "kv_share": layer_fraction * kv_split * sequence_fraction,
+        "allreduce_bytes": (
+            sequences * hidden * width if hidden and width and sequences else None
+        ),
+    }
+
+
 def _stage_gpu_share(data: dict[str, Any]) -> dict[int, float]:
     """Fraction of the run's GPUs in each pipeline stage."""
     stages = data.get("stages") or []
@@ -1408,6 +1608,13 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
                 "b": _scaled(_non_layer(right), spr_b),
             },
             "layer_sum": layer_sum,
+            "pillars": {"a": _pillars(round_a), "b": _pillars(round_b)},
+            "ranks": {"a": _rank_rows(left, spr_a), "b": _rank_rows(right, spr_b)},
+            "work": {"a": work_model(base, phase), "b": work_model(target, phase)},
+            "timeline": {
+                "a": left.get("token_timeline"),
+                "b": right.get("token_timeline"),
+            },
             "stages": stages,
             "layers": layers,
             "collectives": _collective_changes(
@@ -1655,7 +1862,6 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
         total_a, total_b = data["round_us"]["a"], data["round_us"]["b"]
         if not total_a or not total_b:
             continue
-        change = data["change"]
         if same:
             delta = total_b - total_a
             text = (
@@ -1676,21 +1882,18 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                 + ("" if gap >= 2 * noise else " (within noise)")
             )
         add("headline", text + ".")
-        grouped = _group_values(change)
-        net = sum(grouped.values())
-        ranked = sorted(grouped.items(), key=lambda item: -abs(item[1]))
-        reference = (
-            "per generated token (GPU mean)"
-            if same
-            else "against linear scaling, per generated token (GPU mean)"
-        )
+        factor = result["factor"]
+        pillars = data["pillars"]
         add(
-            "decomposition",
-            f"{phase}: the {_ms(net)} change {reference} splits into "
+            "bridge",
+            f"{phase}: per GPU and generated token"
+            + ("" if same else f" (A scaled by {factor:.3g} for linear scaling)")
+            + ", "
             + ", ".join(
-                f"{name} {value / 1000:+.2f} ms"
-                for name, value in ranked
-                if abs(value) >= 1
+                f"{PILLAR_LABELS[name]} {_ms(factor * pillars['a'][name])} → {_ms(pillars['b'][name])} "
+                f"({(pillars['b'][name] - factor * pillars['a'][name]) / 1000:+.2f} ms)"
+                for name, _ in PILLARS
+                if max(pillars["a"][name], pillars["b"][name]) >= 1
             )
             + ".",
         )
@@ -1727,15 +1930,6 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                     + (f" ({detail})" if detail else "")
                 )
             add("split", f"{phase}: by location, " + "; ".join(pieces) + ".")
-        spr = data["steps_per_round"]
-        seqs = data["sequences_per_step"]
-        if spr["a"] != spr["b"]:
-            add(
-                "pipeline",
-                f"{phase}: A runs {spr['a']:.0f} step(s) of {seqs['a']:.0f} sequences per generated token, B runs "
-                f"{spr['b']:.0f} step(s) of {seqs['b']:.0f}: pipeline micro-batches make every GPU run its layers once "
-                "per micro-batch, so weights are streamed from memory that many times per token.",
-            )
         for side, label in (("a", "A"), ("b", "B")):
             stages = data["stages"][side]
             if len(stages) > 1:
@@ -1762,51 +1956,80 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                     + f"), so the other stages idle in a pipeline bubble of "
                     f"{_ms(data['round'][side]['bubble'])} per GPU and token.",
                 )
-        compute = sum(change[c] for c in COMPUTE)
-        if abs(compute) >= 0.05 * max(total_a, total_b):
+        work_a, work_b = data["work"]["a"], data["work"]["b"]
+        round_a, round_b = data["round"]["a"], data["round"]["b"]
+        if round_a["gemm"] and round_b["gemm"] and work_a["weight_share"]:
             add(
                 "compute",
-                f"{phase}: compute per generated token (GPU mean) changes by {compute / 1000:+.2f} ms "
-                f"(GEMM {change['gemm'] / 1000:+.2f}, attention {change['attention'] / 1000:+.2f}, "
-                f"other {change['other'] / 1000:+.2f} ms"
-                + ("" if same else ", against linear scaling")
-                + ").",
+                f"{phase}: one GPU reads {work_a['weight_share']:.1%} of the decoder weights per "
+                f"token in A ({_work_text(work_a)}) and {work_b['weight_share']:.1%} in B "
+                f"({_work_text(work_b)}), ×{work_b['weight_share'] / work_a['weight_share']:.2f}; "
+                f"its GEMM time per token goes {_ms(round_a['gemm'])} → {_ms(round_b['gemm'])} "
+                f"(×{round_b['gemm'] / round_a['gemm']:.2f}). KV-cache reads per GPU "
+                f"×{work_b['kv_share'] / work_a['kv_share']:.2f}, attention "
+                f"{_ms(round_a['attention'])} → {_ms(round_b['attention'])}"
+                + (
+                    f" (×{round_b['attention'] / round_a['attention']:.2f})"
+                    if round_a["attention"]
+                    else ""
+                )
+                + ".",
             )
-        reduce_rows = [
-            row
-            for row in data["collectives"]
-            if row["dim"] == "tp"
+        layer_reduces = _merged_collectives(
+            data["collectives"],
+            lambda row: row["dim"] == "tp"
             and row["op"] == "all_reduce"
-            and row["a"]
-            and row["b"]
-        ]
-        if reduce_rows:
-
-            def stats(side: str) -> tuple[float, float, float]:
-                count = sum(row[side]["count"] for row in reduce_rows)
-                mean = (
-                    sum(
-                        row[side]["count"] * row[side]["duration_us"]
-                        for row in reduce_rows
-                    )
-                    / count
-                )
-                wait = (
-                    sum(
-                        row[side]["count"] * row[side]["wait_us"] for row in reduce_rows
-                    )
-                    / count
-                )
-                return count, mean, wait
-
-            count_a, mean_a, wait_a = stats("a")
-            count_b, mean_b, wait_b = stats("b")
+            and row["role"] in ("attention", "mlp", "layers"),
+        )
+        if layer_reduces["a"] and layer_reduces["b"]:
+            sizes = [work["allreduce_bytes"] for work in (work_a, work_b)]
             add(
                 "communication",
-                f"{phase}: TP all-reduce per generated token and GPU: A {count_a:.0f} × {mean_a:.1f} µs "
-                f"({_ms(count_a * mean_a)}, wait {wait_a:.1f} µs each), B {count_b:.0f} × {mean_b:.1f} µs "
-                f"({_ms(count_b * mean_b)}, wait {wait_b:.1f} µs each). Exposed collective communication changes by "
-                f"{sum(change[c] for c in COMM) / 1000:+.2f} ms, hidden communication by {change['overlap'] / 1000:+.2f} ms.",
+                f"{phase}: TP all-reduce inside the layers, per GPU and token: "
+                + "; ".join(
+                    f"{label} {stats['count']:.0f} × {stats['duration_us']:.1f} µs "
+                    f"(transfer {stats['xfer_us']:.1f} + wait {stats['wait_us']:.1f}) = "
+                    f"{_ms(stats['total_us'])} among {work['tp']} GPUs"
+                    for label, stats, work in (
+                        ("A", layer_reduces["a"], work_a),
+                        ("B", layer_reduces["b"], work_b),
+                    )
+                )
+                + (
+                    f"; estimated message {sizes[0] / 1024:.0f} → {sizes[1] / 1024:.0f} KiB"
+                    if all(sizes)
+                    else ""
+                )
+                + ".",
+            )
+        others = [
+            row
+            for row in data["collectives"]
+            if row["dim"] != "pp"
+            and not (
+                row["op"] == "all_reduce"
+                and row["role"] in ("attention", "mlp", "layers")
+            )
+            and abs(
+                (row["b"] or {}).get("total_us", 0.0)
+                - result["factor"] * (row["a"] or {}).get("total_us", 0.0)
+            )
+            >= 50
+        ]
+        if others:
+            add(
+                "communication",
+                f"{phase}: other collectives per GPU and token: "
+                + "; ".join(
+                    f"{row['dim'].upper()} {row['op'].replace('_', '-')} ({row['role']}) "
+                    + ", ".join(
+                        f"{label} {stats['count']:.1f} × {stats['duration_us']:.1f} µs"
+                        for label, stats in (("A", row["a"]), ("B", row["b"]))
+                        if stats
+                    )
+                    for row in others
+                )
+                + ".",
             )
         if data["round"]["b"]["pp_xfer"] or data["round"]["a"]["pp_xfer"]:
             add(
@@ -1839,6 +2062,37 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                 + ".",
             )
     return findings
+
+
+def _work_text(work: dict[str, Any]) -> str:
+    layers = work.get("layers_per_gpu")
+    return (
+        (f"{layers:.0f} layers × " if layers else "")
+        + f"1/{work['tp']} of each matrix × {work['steps_per_token']:g} step(s) per token"
+    )
+
+
+def _merged_collectives(
+    rows: Sequence[dict[str, Any]], keep: Any
+) -> dict[str, dict[str, float] | None]:
+    """Sum of several collective rows per side: calls, mean time per call."""
+    merged: dict[str, dict[str, float] | None] = {}
+    for side in ("a", "b"):
+        items = [row[side] for row in rows if keep(row) and row[side]]
+        count = sum(item["count"] for item in items)
+        merged[side] = (
+            {
+                "count": count,
+                "duration_us": sum(i["count"] * i["duration_us"] for i in items)
+                / count,
+                "xfer_us": sum(i["count"] * i["xfer_us"] for i in items) / count,
+                "wait_us": sum(i["count"] * i["wait_us"] for i in items) / count,
+                "total_us": sum(i["total_us"] for i in items),
+            }
+            if count
+            else None
+        )
+    return merged
 
 
 def _kernel_name(name: str, limit: int = 90) -> str:
@@ -1881,6 +2135,9 @@ def bench_metrics(run_dir: Path) -> dict[str, float]:
     return metrics
 
 
+DTYPE_BYTES = {"bfloat16": 2, "float16": 2, "float32": 4, "float8_e4m3fn": 1}
+
+
 def run_model_info(run_dir: Path) -> dict[str, Any]:
     """Model, parallel layout, decode concurrency and decoder layer count from
     a VAP run's config.json, the model's Hugging Face config.json and the
@@ -1891,6 +2148,7 @@ def run_model_info(run_dir: Path) -> dict[str, Any]:
         "topology": None,
         "parallel": None,
         "num_layers": None,
+        "model_shape": None,
         "concurrency": None,
         "bench": bench_metrics(run_dir),
     }
@@ -1927,6 +2185,16 @@ def run_model_info(run_dir: Path) -> dict[str, Any]:
         layers = section.get("num_hidden_layers") if isinstance(section, dict) else None
         if isinstance(layers, int) and layers > 0:
             info["num_layers"] = layers
+            dtype = str(
+                section.get("torch_dtype") or hf_config.get("torch_dtype") or ""
+            )
+            info["model_shape"] = {
+                "hidden_size": section.get("hidden_size"),
+                "attention_heads": section.get("num_attention_heads"),
+                "kv_heads": section.get("num_key_value_heads")
+                or section.get("num_attention_heads"),
+                "dtype_bytes": DTYPE_BYTES.get(dtype.replace("torch.", "")),
+            }
             break
     return info
 
@@ -2315,6 +2583,82 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
                     _share(mb["bubble_share"]),
                 ),
                 ("Idle share %", _share(ma["idle_share"]), _share(mb["idle_share"])),
+            ],
+        )
+        factor = result["factor"]
+        pillars = data["pillars"]
+        lines += ["### Time per token by kind (µs per GPU, mean over GPUs)", ""]
+        lines += _md_table(
+            ["Kind", "A" if same else f"{factor:.3g}·A", "B", change_label],
+            [
+                [
+                    PILLAR_LABELS[name].capitalize(),
+                    factor * pillars["a"][name],
+                    pillars["b"][name],
+                    pillars["b"][name] - factor * pillars["a"][name],
+                ]
+                for name, _ in PILLARS
+            ],
+        )
+        work = data["work"]
+
+        def work_row(label: str, pick: Any) -> list[Any]:
+            return [label, *(pick(work[side]) for side in ("a", "b"))]
+
+        lines += ["### Work of one GPU per generated token", ""]
+        lines += _md_table(
+            ["", "A", "B"],
+            [
+                work_row("Share of each weight matrix", lambda w: f"1/{w['tp']}"),
+                work_row("Pipeline stages", lambda w: w["pp"]),
+                work_row("Decoder layers per GPU", lambda w: w["layers_per_gpu"]),
+                work_row("Engine steps per token", lambda w: w["steps_per_token"]),
+                work_row("Sequences per step", lambda w: w["sequences_per_step"]),
+                work_row("Decoder weights read %", lambda w: 100 * w["weight_share"]),
+                work_row("KV cache read %", lambda w: 100 * w["kv_share"]),
+                work_row(
+                    "TP all-reduce message KiB (estimate)",
+                    lambda w: (
+                        w["allreduce_bytes"] / 1024 if w["allreduce_bytes"] else None
+                    ),
+                ),
+            ],
+        )
+        lines += ["### Per GPU (µs per generated token)", ""]
+        lines += _md_table(
+            [
+                "Run",
+                "GPU",
+                "Stage",
+                "GEMM",
+                "Attention",
+                "Other compute",
+                "Comm transfer",
+                "Comm wait",
+                "PP transfer",
+                "Pipeline wait",
+                "Idle",
+                "Total",
+            ],
+            [
+                [
+                    side.upper(),
+                    row["rank"],
+                    f"S{row['stage']}",
+                    row["values"]["gemm"],
+                    row["values"]["attention"],
+                    row["values"]["other"]
+                    + row["values"]["memcpy"]
+                    + row["values"]["overlap"],
+                    row["values"]["comm_xfer"] + row["values"]["comm_unmatched"],
+                    row["values"]["comm_wait"],
+                    row["values"]["pp_xfer"],
+                    row["values"]["bubble"],
+                    row["values"]["idle"],
+                    sum(row["values"].values()),
+                ]
+                for side in ("a", "b")
+                for row in data["ranks"][side]
             ],
         )
         if any(len(data["stages"][side]) > 1 for side in ("a", "b")):
@@ -2770,7 +3114,7 @@ def agent_summary(
 
 
 def compare_summary(
-    result: dict[str, Any], include_layers: bool = True
+    result: dict[str, Any], include_layers: bool = True, include_timeline: bool = False
 ) -> dict[str, Any]:
     """Compact, rounded view of a comparison for an LLM and the UI."""
     phases: dict[str, Any] = {}
@@ -2805,6 +3149,14 @@ def compare_summary(
             "layers": _rounded(data["layer_sum"]),
             "outside": _rounded(data["non_layer"]),
         }
+        entry["pillars"] = _rounded(data["pillars"])
+        entry["work"] = _rounded(data["work"], 4)
+        entry["ranks"] = {
+            side: [{**row, "values": _rounded(row["values"])} for row in rows]
+            for side, rows in data["ranks"].items()
+        }
+        if include_timeline:
+            entry["timeline"] = data["timeline"]
         entry["stages"] = {
             side: [
                 {
@@ -2930,6 +3282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             model=info["model"],
             concurrency=info["concurrency"],
             bench=info["bench"],
+            model_shape=info["model_shape"],
         )
         outputs = write_analysis(result, args.out or profile_dir / "attribution")
         print(json.dumps({"outputs": outputs, "summary": brief(result)}, indent=2))

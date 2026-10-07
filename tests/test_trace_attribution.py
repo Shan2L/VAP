@@ -21,6 +21,8 @@ from vap.analysis.attribution import (
     select_trace_files,
     step_phase,
     steps_per_round,
+    timeline_spans,
+    work_model,
     write_analysis,
 )
 
@@ -406,7 +408,8 @@ class TraceAttributionTests(unittest.TestCase):
         )
         report = render_compare_markdown(result)
         self.assertIn("# TP4 (A) vs TP8 (B)", report)
-        self.assertIn("splits into Exposed collective comm +0.02 ms", report)
+        self.assertIn("communication 0.01 ms → 0.03 ms (+0.02 ms)", report)
+        self.assertIn("| Communication | 10.0 | 30.0 | 20.0 |", report)
         self.assertRegex(report, r"\n\| L0 \| S0/S0 \| 160.0 \| 100.0 \| 20.0 \| ")
 
     def test_topology_maps_communicators_to_parallel_dimensions(self) -> None:
@@ -469,6 +472,73 @@ class TraceAttributionTests(unittest.TestCase):
         self.assertIn(
             "by location, the 2 decoder layers +0.00 ms",
             render_compare_markdown(comparison),
+        )
+
+    def test_pillars_and_gpu_rows_add_up_to_the_time_per_token(self) -> None:
+        decode = compare(pipeline_run(), pipeline_run())["phases"]["decode"]
+        self.assertEqual(
+            decode["pillars"]["a"],
+            {"compute": 150.0, "communication": 10.0, "pipeline": 30.0, "idle": 10.0},
+        )
+        self.assertEqual(
+            [
+                (row["rank"], row["stage"], sum(row["values"].values()))
+                for row in decode["ranks"]["b"]
+            ],
+            [(0, 0, 200.0), (1, 1, 200.0)],
+        )
+
+    def test_work_model_counts_what_one_gpu_reads_per_token(self) -> None:
+        shape = {
+            "hidden_size": 64,
+            "attention_heads": 4,
+            "kv_heads": 2,
+            "dtype_bytes": 2,
+        }
+        pipeline = pipeline_run()
+        pipeline["meta"].update(layout={"num_layers": 2}, model_shape=shape)
+        tensor = scaling_run(2, {"gemm": 100.0})
+        tensor["meta"].update(
+            layout={"num_layers": 2}, model_shape=shape, concurrency=32
+        )
+        keys = (
+            "steps_per_token",
+            "layers_per_gpu",
+            "weight_share",
+            "kv_share",
+            "allreduce_bytes",
+        )
+        # TP1 x PP2: half the layers but whole matrices, read once per
+        # micro-batch, so twice the weights of TP2 per GPU and token.
+        self.assertEqual(
+            [work_model(pipeline, "decode")[key] for key in keys],
+            [2.0, 1.0, 1.0, 0.5, 2048],
+        )
+        self.assertEqual(
+            [work_model(tensor, "decode")[key] for key in keys],
+            [1.0, 2.0, 0.5, 0.5, 4096],
+        )
+
+    def test_timeline_keeps_the_dominant_class_of_every_slice(self) -> None:
+        intervals = [
+            (950.0, 1040.0, "gemm"),
+            (1020.0, 1030.0, "comm_xfer"),
+            (1040.0, 1050.0, "comm_wait"),
+            (1050.0, 1060.0, "comm_xfer"),
+            (1060.0, 1090.0, "pp_wait"),
+            (1092.0, 1095.0, "comm_wait"),
+        ]
+        self.assertEqual(
+            timeline_spans(intervals, 1000.0, 1100.0, bins=10),
+            [
+                [0.0, 20.0, "compute"],
+                [20.0, 30.0, "overlap"],
+                [30.0, 40.0, "compute"],
+                [40.0, 50.0, "comm_wait"],
+                [50.0, 60.0, "comm_xfer"],
+                [60.0, 90.0, "bubble"],
+                [90.0, 100.0, "idle"],
+            ],
         )
 
 
