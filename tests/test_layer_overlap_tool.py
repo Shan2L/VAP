@@ -124,7 +124,8 @@ class LayerOverlapToolTests(unittest.TestCase):
         self.assertEqual(report.name, "compare_vs_run_a.md")
         text = report.read_text(encoding="utf-8")
         self.assertIn("# TP2 (A) vs TP2 (B)", text)
-        self.assertIn("#### Time per layer (µs per token round)", text)
+        self.assertIn("### Decoder layers vs outside them", text)
+        self.assertIn("#### Time per layer (µs per generated token", text)
         self.assertIn("### Kernels with the largest change", text)
         self.assertNotIn("layers", payload["runs"][0]["phases"]["decode"])
 
@@ -268,7 +269,7 @@ class LayerOverlapToolTests(unittest.TestCase):
             (report["type"], report["source"], report["cached"]),
             ("report", "rules", False),
         )
-        self.assertIn("B（TP2）每个 token 轮次需要", report["conclusion"])
+        self.assertIn("B（TP2）每生成一个 token 需要", report["conclusion"])
         self.assertTrue(again[-1]["cached"])
         names = [item["download_url"].rsplit("=", 1)[1] for item in report["downloads"]]
         self.assertEqual(

@@ -209,7 +209,7 @@ def _compare_pair(args: dict[str, Any]) -> dict[str, Any]:
 def compare_two_runs(
     args: dict[str, Any], include_layers: bool = True
 ) -> tuple[dict[str, Any], Path]:
-    """Compare run B (target) against run A (base) per token round and GPU:
+    """Compare run B (target) against run A (base) per generated token, averaged over the GPUs:
     a plain difference when both use the same GPU count, otherwise the loss
     against linear scaling."""
     pair = _compare_pair(args)

@@ -124,6 +124,44 @@ def scaling_run(world_size: int, layer: dict) -> dict:
     }
 
 
+def pipeline_run() -> dict:
+    """TP1 x PP2, one layer per stage: per step each rank spends 60 us in its
+    layer and 40 us outside it (stage 0 waits in a bubble, stage 1 samples)."""
+
+    def values(**parts: float) -> dict[str, float]:
+        return {category: float(parts.get(category, 0.0)) for category in CATEGORIES}
+
+    layer0, layer1 = values(gemm=50, comm_xfer=10), values(gemm=40, attention=20)
+    step0 = values(gemm=50, comm_xfer=10, bubble=30, idle=10)
+    step1 = values(gemm=40, attention=20, other=40)
+    return {
+        "meta": {"world_size": 2, "topology": {"tp": 1, "pp": 2}, "concurrency": 32},
+        "phases": {
+            "decode": {
+                "steps": 2,
+                "sequences_per_step": 16,
+                "segments": ["L0", "L1"],
+                "segment_stage": {"L0": 0, "L1": 1},
+                "step_names": {STEP_NAME: 2},
+                "mean": {
+                    "L0": layer0,
+                    "L1": layer1,
+                    STEP_KEY: {c: (step0[c] + step1[c]) / 2 for c in CATEGORIES},
+                },
+                "per_rank": {
+                    "L0": {"0": layer0},
+                    "L1": {"1": layer1},
+                    STEP_KEY: {"0": step0, "1": step1},
+                },
+                "stages": [
+                    {"stage": 0, "ranks": [0], "layers": [0, 1], "step": step0},
+                    {"stage": 1, "ranks": [1], "layers": [1, 2], "step": step1},
+                ],
+            }
+        },
+    }
+
+
 def pp_trace(rank: int, stage: int, steps: int = 3) -> dict:
     """TP1 x PP2: stage 0 computes 0-60 us then waits for stage 1's sampled
     tokens on a receive (stream 3) until 100; stage 1 receives (2 us), computes
@@ -409,6 +447,29 @@ class TraceAttributionTests(unittest.TestCase):
             self.assertAlmostEqual(sum(values.values()), 100.0)
         texts = [item["text"] for item in analysis_findings(result)]
         self.assertTrue(any("stage 1 is the bottleneck" in text for text in texts))
+
+    def test_layers_count_with_their_share_of_the_token(self) -> None:
+        comparison = compare(pipeline_run(), pipeline_run())
+        decode = comparison["phases"]["decode"]
+        # Per token (two micro-batch steps) a layer runs 120 us on its stage's
+        # GPU, which is half of the GPUs; outside the layers takes 80 us.
+        self.assertEqual(
+            [
+                (row["label"], sum(row["a"].values()), row["wall_us"]["a"])
+                for row in decode["layers"]
+            ],
+            [("L0", 60.0, 120.0), ("L1", 60.0, 120.0)],
+        )
+        for side in ("a", "b"):
+            layers = sum(decode["layer_sum"][side].values())
+            outside = sum(decode["non_layer"][side].values())
+            self.assertEqual(
+                (layers, outside, decode["round_us"][side]), (120.0, 80.0, 200.0)
+            )
+        self.assertIn(
+            "by location, the 2 decoder layers +0.00 ms",
+            render_compare_markdown(comparison),
+        )
 
 
 class TraceSelectionTests(unittest.TestCase):

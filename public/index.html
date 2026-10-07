@@ -78,6 +78,7 @@
       --cat-pp: #8a63b8;
       --cat-bubble: #c25c55;
       --cat-idle: #d9d9de;
+      --hatch: rgba(255, 255, 255, 0.55);
     }
 
     :root[data-theme="dark"] {
@@ -131,6 +132,7 @@
       --cat-pp: #a585d4;
       --cat-bubble: #df7a72;
       --cat-idle: #3a3d45;
+      --hatch: rgba(13, 14, 17, 0.5);
     }
 
     *,
@@ -1143,40 +1145,165 @@
       opacity: 0.5;
     }
 
-    .delta-row {
-      display: grid;
-      grid-template-columns: 180px minmax(0, 1fr) 80px;
-      gap: 10px;
-      align-items: center;
+    .bar-seg.outside {
+      background-image: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 6px);
+    }
+
+    .bar-seg.part-start {
+      box-shadow: inset 2px 0 0 var(--surface);
+    }
+
+    .swatch.hatched {
+      background-color: var(--text-3);
+      background-image: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 5px);
+    }
+
+    .swatch.side-a {
+      background: var(--text-2);
+      opacity: 0.4;
+    }
+
+    .swatch.side-b {
+      background: var(--text-2);
+    }
+
+    .swatch.dashed,
+    .swatch.stage {
+      height: 0;
+      border-radius: 0;
+      border-top: 2px dashed var(--text);
+    }
+
+    .swatch.stage {
+      width: 0;
+      height: 10px;
+      border-top: 0;
+      border-left: 1px dashed var(--text-2);
+    }
+
+    .diff-summary {
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .diff-note {
+      margin: 0;
+      color: var(--text-3);
       font-size: 12px;
+    }
+
+    .layer-chart {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr);
+      gap: 8px;
+      margin: 4px 0 6px;
+      padding-bottom: 22px;
+    }
+
+    .layer-axis {
+      position: relative;
+      height: 180px;
+      color: var(--text-3);
+      font-size: 11px;
       font-variant-numeric: tabular-nums;
     }
 
-    .delta-axis {
-      position: relative;
-      height: 12px;
-    }
-
-    .delta-axis::before {
-      content: "";
+    .layer-axis span {
       position: absolute;
-      top: -2px;
-      bottom: -2px;
-      left: 50%;
-      width: 1px;
-      background: var(--border-strong);
+      right: 0;
+      transform: translateY(50%);
+      white-space: nowrap;
     }
 
-    .delta-bar {
+    .layer-plot {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      height: 180px;
+      border-bottom: 1px solid var(--border-strong);
+    }
+
+    .layer-grid {
+      position: absolute;
+      left: 0;
+      right: 0;
+      border-top: 1px dashed var(--border);
+      pointer-events: none;
+    }
+
+    .layer-group {
+      position: relative;
+      display: flex;
+      flex: 1 1 0;
+      align-items: flex-end;
+      gap: 1px;
+      min-width: 0;
+      height: 100%;
+      border-radius: 2px 2px 0 0;
+    }
+
+    .layer-group:hover {
+      background: var(--surface-3);
+    }
+
+    .layer-col {
+      display: flex;
+      flex: 1 1 0;
+      flex-direction: column-reverse;
+      min-width: 0;
+      height: 100%;
+    }
+
+    .layer-col i {
+      display: block;
+      flex: none;
+    }
+
+    .layer-col.side-a {
+      opacity: 0.4;
+    }
+
+    .layer-target {
+      position: absolute;
+      left: 50%;
+      right: 0;
+      border-top: 2px dashed var(--text);
+      pointer-events: none;
+    }
+
+    .layer-stage {
       position: absolute;
       top: 0;
-      height: 100%;
-      border-radius: 2px;
+      bottom: 0;
+      left: -2px;
+      border-left: 1px dashed var(--text-2);
+      pointer-events: none;
     }
 
-    .delta-value {
-      text-align: right;
-      font-weight: 600;
+    .layer-stage em {
+      position: absolute;
+      top: 0;
+      left: 4px;
+      padding: 0 4px;
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text-2);
+      font-size: 11px;
+      font-style: normal;
+      white-space: nowrap;
+    }
+
+    .layer-tick {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 50%;
+      transform: translateX(-50%);
+      color: var(--text-3);
+      font-size: 11px;
+      white-space: nowrap;
     }
 
     .segmented {
@@ -2449,8 +2576,7 @@
         justify-self: center;
       }
 
-      .bar-row,
-      .delta-row {
+      .bar-row {
         grid-template-columns: 96px minmax(0, 1fr) 64px;
       }
     }
@@ -2653,7 +2779,7 @@
           <div class="analysis-setup-head">
             <div>
               <h2 id="analysis-title">Compare runs</h2>
-              <p class="analysis-hint">Explains why run B is faster or slower than run A, per token round and GPU, per pipeline stage, per layer and per collective.</p>
+              <p class="analysis-hint">Explains why run B is faster or slower than run A, per generated token, per decoder layer, per pipeline stage and per collective.</p>
             </div>
             <button class="small" id="analysis-refresh" type="button"><span class="button-icon" aria-hidden="true">↻</span>Refresh runs</button>
           </div>
@@ -2686,7 +2812,7 @@
 
         <div class="analysis-empty" id="analysis-empty">
           <p class="analysis-empty-title">Pick a baseline (A) and a target (B), then analyze.</p>
-          <p>The engine reads every rank trace, splits each GPU's time into compute, communication hidden by compute, exposed communication, pipeline bubble and idle, and lines the runs up per token round. The agent then writes a templated report; its conclusion appears here first.</p>
+          <p>The engine reads every rank trace, splits each GPU's time into compute, communication hidden by compute, exposed communication, pipeline bubble and idle, and lines the runs up per generated token (the same basis as TPOT). The agent then writes a templated report; its conclusion appears here first.</p>
           <ul>
             <li>Same GPU count, different layout (for example TP4 vs TP2×PP2): the plain difference B minus A.</li>
             <li>Different GPU count (for example TP4 vs TP8): the loss against linear scaling.</li>
@@ -2728,7 +2854,7 @@
             <div class="analysis-card-head">
               <div>
                 <h3 id="analysis-breakdown-title">Where the time goes</h3>
-                <p class="analysis-sub">Time per token round and GPU; pipeline stages shown separately</p>
+                <p class="analysis-sub">Time per generated token (comparable to TPOT), averaged over the GPUs; hatched parts are outside the decoder layers, stage rows show each pipeline stage's GPUs</p>
               </div>
             </div>
             <div class="breakdown" id="analysis-breakdown"></div>
@@ -2740,13 +2866,15 @@
             <div class="analysis-card-head">
               <div>
                 <h3 id="analysis-layer-title">Per layer</h3>
-                <p class="analysis-sub" id="analysis-layer-sub">Wall time of each decoder layer on the GPUs that run it, per token round</p>
+                <p class="analysis-sub" id="analysis-layer-sub">Time each decoder layer adds to a generated token, averaged over all GPUs</p>
               </div>
               <div class="segmented" id="analysis-layer-view" role="group" aria-label="Layer table view">
                 <button class="active" type="button" data-view="time">Time µs</button>
                 <button type="button" data-view="share">Shares %</button>
               </div>
             </div>
+            <div class="layer-chart" id="analysis-layer-chart"></div>
+            <div class="viz-legend" id="analysis-layer-legend"></div>
             <div class="table-wrap"><table class="data-table" id="analysis-layer-table"></table></div>
           </section>
 
@@ -2754,7 +2882,7 @@
             <div class="analysis-card-head">
               <div>
                 <h3 id="analysis-comm-title">Communication</h3>
-                <p class="analysis-sub">Per token round and GPU; wait is time spent spinning for peer ranks or stages</p>
+                <p class="analysis-sub">Per generated token, averaged over the GPUs; wait is time spent spinning for peer ranks or stages</p>
               </div>
             </div>
             <div class="table-wrap"><table class="data-table" id="analysis-comm-table"></table></div>
@@ -4023,7 +4151,7 @@
       const roundB = phase.round_us.b;
       const kpis = [];
       kpis.push({
-        label: "Token round per GPU",
+        label: "Time per token",
         a: fmtMs(roundA),
         b: fmtMs(roundB),
         delta: same
@@ -4050,7 +4178,7 @@
       const spr = phase.steps_per_round;
       const seqs = phase.sequences_per_step;
       if (spr.a !== spr.b) {
-        kpis.push({ label: "Steps × sequences per round", a: `${spr.a}×${Math.round(seqs.a)}`, b: `${spr.b}×${Math.round(seqs.b)}`, delta: "micro-batches", cls: "delta-flat" });
+        kpis.push({ label: "Steps × sequences per token", a: `${spr.a}×${Math.round(seqs.a)}`, b: `${spr.b}×${Math.round(seqs.b)}`, delta: "micro-batches", cls: "delta-flat" });
       }
       const tpotA = comparison.a.bench?.tpot_ms_mean;
       const tpotB = comparison.b.bench?.tpot_ms_mean;
@@ -4067,62 +4195,113 @@
       }));
     }
 
-    function barRow(label, values, scale, sub = false) {
+    function scaledValues(values, factor) {
+      return Object.fromEntries(Object.entries(values || {}).map(([key, value]) => [key, value * factor]));
+    }
+
+    function runParts(phase, side, factor = 1) {
+      if (!phase.parts) return [["", scaledValues(phase.round[side], factor), false]];
+      return [
+        ["Decoder layers", scaledValues(phase.parts.layers[side], factor), false],
+        ["Outside the layers", scaledValues(phase.parts.outside[side], factor), true],
+      ];
+    }
+
+    function barRow(label, parts, scale, sub = false) {
       const row = document.createElement("div");
       row.className = "bar-row" + (sub ? " sub" : "");
-      const total = Object.values(values).reduce((sum, value) => sum + value, 0);
-      const segments = ANALYSIS_CATEGORIES.map(([key, name, cls, members]) => {
-        const value = sumCategories(values, members);
-        if (value <= 0) return "";
-        const width = (100 * value / scale).toFixed(3);
-        return `<span class="bar-seg ${cls}" style="width:${width}%" title="${escapeAttr(`${name}: ${fmtMs(value)} (${fmtPct(value / total)})`)}"></span>`;
-      }).join("");
+      const total = parts.reduce((sum, [, values]) => sum + Object.values(values).reduce((acc, value) => acc + value, 0), 0);
+      const segments = parts.flatMap(([part, values, outside]) => ANALYSIS_CATEGORIES
+        .map(([, name, cls, members]) => [name, cls, sumCategories(values, members)])
+        .filter(([, , value]) => value > 0)
+        .map(([name, cls, value], index) => {
+          const classes = `bar-seg ${cls}${outside ? " outside" : ""}${outside && index === 0 ? " part-start" : ""}`;
+          const tip = `${part ? `${part} · ` : ""}${name}: ${fmtMs(value)} (${fmtPct(value / total)})`;
+          return `<span class="${classes}" style="width:${(100 * value / scale).toFixed(3)}%" title="${escapeAttr(tip)}"></span>`;
+        }));
       row.innerHTML = `<span class="bar-label" title="${escapeAttr(label)}">${escapeHtml(label)}</span>`
-        + `<span class="bar-track">${segments}</span><span class="bar-total">${fmtMs(total)}</span>`;
+        + `<span class="bar-track">${segments.join("")}</span><span class="bar-total">${fmtMs(total)}</span>`;
       return row;
     }
 
     function renderBreakdown(phase, comparison) {
       const rows = [];
-      const sides = [["a", "A", comparison.a], ["b", "B", comparison.b]];
-      const scale = Math.max(phase.round_us.a, phase.round_us.b, comparison.mode === "scaling" ? phase.round_us.a * comparison.factor : 0);
-      for (const [side, letter, head] of sides) {
-        rows.push(barRow(`${letter} · ${head.parallel}`, phase.round[side], scale));
+      const scaling = comparison.mode === "scaling";
+      const scale = Math.max(phase.round_us.a, phase.round_us.b, scaling ? phase.round_us.a * comparison.factor : 0);
+      for (const [side, letter, head] of [["a", "A", comparison.a], ["b", "B", comparison.b]]) {
+        rows.push(barRow(`${letter} · ${head.parallel}`, runParts(phase, side), scale));
         const stages = phase.stages[side] || [];
         if (stages.length > 1) {
           for (const stage of stages) {
-            rows.push(barRow(`S${stage.stage} · L${stage.layers[0]}-${stage.layers[1] - 1}`, stage.round, scale, true));
+            rows.push(barRow(`S${stage.stage} · L${stage.layers[0]}-${stage.layers[1] - 1}`, [["", stage.round, false]], scale, true));
           }
         }
       }
-      if (comparison.mode === "scaling") {
-        const ideal = Object.fromEntries(Object.entries(phase.round.a).map(([key, value]) => [key, value * comparison.factor]));
-        rows.push(barRow(`Linear target (${comparison.factor}×A)`, ideal, scale, true));
+      if (scaling) {
+        rows.push(barRow(`Linear target (${comparison.factor}×A)`, runParts(phase, "a", comparison.factor), scale, true));
       }
       document.getElementById("analysis-breakdown").replaceChildren(...rows);
       const present = ANALYSIS_CATEGORIES.filter(([, , , members]) =>
         ["a", "b"].some((side) => sumCategories(phase.round[side], members) > 0));
       document.getElementById("analysis-legend").innerHTML = present
-        .map(([, name, cls]) => `<span><i class="swatch ${cls}"></i>${escapeHtml(name)}</span>`).join("");
-      const changes = DELTA_GROUPS
-        .map(([name, members, cls]) => [name, sumCategories(phase.change, members), cls])
-        .filter(([, value]) => Math.abs(value) >= 1)
-        .sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]));
-      const peak = Math.max(1, ...changes.map(([, value]) => Math.abs(value)));
+        .map(([, name, cls]) => `<span><i class="swatch ${cls}"></i>${escapeHtml(name)}</span>`).join("")
+        + (phase.parts ? '<span><i class="swatch hatched"></i>Outside the decoder layers</span>' : "");
+      renderDifference(phase, comparison);
+    }
+
+    function differenceSentence(same, factor, count, total, inside, outside) {
+      const layers = `${count} decoder layer${count === 1 ? "" : "s"}`;
+      const verb = (value, plural) => `${plural ? "take" : "takes"} ${fmtMs(Math.abs(value))} ${value >= 0 ? "longer" : "less"}`;
+      const joiner = (inside >= 0) === (outside >= 0) ? "and" : "but";
+      const lead = same
+        ? `B is ${fmtMs(Math.abs(total))} ${total >= 0 ? "slower" : "faster"} per generated token than A.`
+        : `B is ${fmtMs(Math.abs(total))} ${total >= 0 ? "above" : "below"} the linear-scaling target (${factor}×A) per generated token.`;
+      return `${lead} Its ${layers} ${verb(inside, count !== 1)}${same ? "" : " than the target"}, ${joiner} the work outside them ${verb(outside, false)}.`;
+    }
+
+    function renderDifference(phase, comparison) {
+      const container = document.getElementById("analysis-deltas");
+      if (!phase.parts) {
+        container.replaceChildren();
+        return;
+      }
+      const same = comparison.mode === "same_gpus";
+      const factor = same ? 1 : comparison.factor;
+      const count = (phase.layers || []).length;
+      const parts = [
+        [`Decoder layers (${count})`, phase.parts.layers],
+        ["Outside the layers", phase.parts.outside],
+      ];
+      const every = Object.keys(phase.round.a);
+      const change = (values, members) => sumCategories(values.b, members) - factor * sumCategories(values.a, members);
+      const [inside, outside] = parts.map(([, values]) => change(values, every));
+      const columns = DELTA_GROUPS.filter(([, members]) => parts.some(([, values]) => Math.abs(change(values, members)) >= 5));
+      const peak = Math.max(1, ...parts.flatMap(([, values]) => columns.map(([, members]) => Math.abs(change(values, members)))));
+      const ms = (value) => fmtSigned(value / 1000, 2);
+      const before = same ? "A" : `${factor}×A`;
+      const tip = (values, members) => `${before} ${fmtMs(factor * sumCategories(values.a, members))} → B ${fmtMs(sumCategories(values.b, members))}`;
+      const head = `<thead><tr><th>Where</th>${columns.map(([name]) => `<th>${escapeHtml(name)}</th>`).join("")}<th class="group-start">Total</th></tr></thead>`;
+      const body = parts.map(([label, values]) => `<tr>${cell(escapeHtml(label))}`
+        + columns.map(([, members]) => heatCell(change(values, members), peak, ms(change(values, members)), "", tip(values, members))).join("")
+        + `${heatCell(change(values, every), Math.max(peak, Math.abs(change(values, every))), ms(change(values, every)), "group-start", tip(values, every))}</tr>`).join("");
+      const footer = `<tr class="total-row">${cell("Per token")}`
+        + columns.map(([, members]) => cell(ms(parts.reduce((sum, [, values]) => sum + change(values, members), 0)))).join("")
+        + `${cell(ms(inside + outside), "group-start")}</tr>`;
       const title = document.createElement("p");
       title.className = "delta-title";
-      title.textContent = comparison.mode === "same_gpus"
-        ? "Change per token round and GPU (B − A)"
-        : `Loss against linear scaling per token round and GPU (B − ${comparison.factor}×A)`;
-      document.getElementById("analysis-deltas").replaceChildren(title, ...changes.map(([name, value, cls]) => {
-        const row = document.createElement("div");
-        row.className = "delta-row";
-        const width = (50 * Math.abs(value) / peak).toFixed(2);
-        const left = value >= 0 ? 50 : 50 - Number(width);
-        row.innerHTML = `<span>${escapeHtml(name)}</span><span class="delta-axis"><i class="delta-bar ${cls}" style="left:${left}%;width:${width}%"></i></span>`
-          + `<span class="delta-value ${deltaClass(value, true)}">${fmtSigned(value / 1000, 2, " ms")}</span>`;
-        return row;
-      }));
+      title.textContent = same
+        ? "Where the difference comes from (B − A, ms per generated token)"
+        : `Where the loss against linear scaling comes from (B − ${factor}×A, ms per generated token)`;
+      const summary = document.createElement("p");
+      summary.className = "diff-summary";
+      summary.textContent = differenceSentence(same, factor, count, inside + outside, inside, outside);
+      const wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      wrap.innerHTML = `<table class="data-table diff-table">${head}<tbody>${body}${footer}</tbody></table>`;
+      const note = document.createElement("p");
+      note.className = "diff-note";
+      note.textContent = "Outside the layers: embedding, LM head, logits gather, sampling, pipeline hand-off and the pipeline bubble. Red: B spends more time; green: less. Hover a value for A and B.";
+      container.replaceChildren(title, summary, wrap, note);
     }
 
     function tableHead(groups) {
@@ -4130,15 +4309,101 @@
       return top;
     }
 
-    function cell(value, extraClass = "", style = "") {
-      return `<td class="${extraClass}"${style ? ` style="${style}"` : ""}>${value}</td>`;
+    function cell(value, extraClass = "", style = "", title = "") {
+      return `<td class="${extraClass}"${style ? ` style="${style}"` : ""}${title ? ` title="${escapeAttr(title)}"` : ""}>${value}</td>`;
     }
 
-    function heatCell(value, peak, text, extraClass = "") {
-      if (value == null || !peak) return cell(text, extraClass);
+    function heatCell(value, peak, text, extraClass = "", title = "") {
+      if (value == null || !peak) return cell(text, extraClass, "", title);
       const color = value > 0 ? "var(--danger)" : "var(--ok)";
       const intensity = Math.min(0.35, 0.35 * Math.abs(value) / peak).toFixed(3);
-      return `<td class="heat ${extraClass}" style="--heat:${intensity};--heat-color:${color}"><span>${text}</span></td>`;
+      return cell(`<span>${text}</span>`, `heat ${extraClass}`, `--heat:${intensity};--heat-color:${color}`, title);
+    }
+
+    const LAYER_SERIES = [
+      ["Compute", "cat-gemm", (m) => Math.max(0, (m.compute_us || 0) - (m.overlap_us || 0))],
+      ["Comm hidden by compute", "cat-overlap", (m) => m.overlap_us || 0],
+      ["Exposed comm", "cat-comm", (m) => m.exposed_comm_us || 0],
+      ["Pipeline bubble", "cat-bubble", (m) => m.bubble_us || 0],
+      ["Idle", "cat-idle", (m) => m.idle_us || 0],
+    ];
+
+    function stageGpus(phase, side, stage) {
+      return (phase.stages[side] || []).find((item) => item.stage === stage)?.ranks.length;
+    }
+
+    function wallNote(phase, row, side) {
+      const wall = row.wall_us?.[side];
+      const share = row[side]?.total_us;
+      if (wall == null || share == null || Math.abs(wall - share) < 0.5) return "";
+      const gpus = stageGpus(phase, side, side === "a" ? row.stage_a : row.stage_b);
+      return `${fmtUs(wall)} µs of wall time on the ${gpus} GPUs of its pipeline stage`;
+    }
+
+    function layerTip(phase, comparison, row) {
+      const factor = comparison.mode === "scaling" ? comparison.factor : 1;
+      const lines = [`${row.label} (A stage S${row.stage_a}, B stage S${row.stage_b})`];
+      for (const [side, letter] of [["a", "A"], ["b", "B"]]) {
+        const metrics = row[side];
+        if (!metrics) continue;
+        const parts = LAYER_SERIES.map(([name, , pick]) => [name, pick(metrics)])
+          .filter(([, value]) => value >= 0.5)
+          .map(([name, value]) => `${name.toLowerCase()} ${fmtUs(value)}`).join(", ");
+        const wall = wallNote(phase, row, side);
+        lines.push(`${letter}: ${fmtUs(metrics.total_us)} µs (${parts})${wall ? `; ${wall}` : ""}`);
+      }
+      if (row.change_us != null) {
+        lines.push(factor === 1
+          ? `B − A: ${fmtSigned(row.change_us)} µs`
+          : `Linear target ${fmtUs(factor * row.a.total_us)} µs; B − target: ${fmtSigned(row.change_us)} µs`);
+      }
+      return lines.join("\n");
+    }
+
+    function renderLayerChart(phase, comparison) {
+      const chart = document.getElementById("analysis-layer-chart");
+      const legend = document.getElementById("analysis-layer-legend");
+      const layers = phase.layers || [];
+      if (!layers.length) {
+        chart.replaceChildren();
+        legend.replaceChildren();
+        return;
+      }
+      const factor = comparison.mode === "scaling" ? comparison.factor : null;
+      const peak = Math.max(1, ...layers.flatMap((row) => [row.a?.total_us || 0, row.b?.total_us || 0]));
+      const top = peak * 1.08;
+      const height = (value) => `${(100 * value / top).toFixed(3)}%`;
+      const column = (side, metrics) => `<span class="layer-col side-${side}">${metrics
+        ? LAYER_SERIES.map(([, cls, pick]) => {
+          const value = pick(metrics);
+          return value > 0 ? `<i class="${cls}" style="height:${height(value)}"></i>` : "";
+        }).join("")
+        : ""}</span>`;
+      const every = layers.length > 60 ? 10 : layers.length > 20 ? 5 : 1;
+      let stageLines = false;
+      const groups = layers.map((row, index) => {
+        const previous = layers[index - 1];
+        const moved = previous
+          ? [["A", row.stage_a, previous.stage_a], ["B", row.stage_b, previous.stage_b]].filter(([, stage, before]) => stage !== before)
+          : [];
+        stageLines ||= moved.length > 0;
+        const boundary = moved.length
+          ? `<b class="layer-stage"><em>${escapeHtml(moved.map(([letter, stage]) => `${letter} S${stage}`).join(" · "))}</em></b>`
+          : "";
+        const target = factor && row.a ? `<b class="layer-target" style="bottom:${height(factor * row.a.total_us)}"></b>` : "";
+        return `<div class="layer-group" title="${escapeAttr(layerTip(phase, comparison, row))}">${boundary}${column("a", row.a)}${column("b", row.b)}${target}`
+          + `<span class="layer-tick">${index % every === 0 ? escapeHtml(row.label) : ""}</span></div>`;
+      });
+      const grid = [peak, peak / 2].map((value) => `<i class="layer-grid" style="bottom:${height(value)}"></i>`).join("");
+      chart.innerHTML = `<div class="layer-axis"><span style="bottom:${height(peak)}">${fmtUs(peak)} µs</span>`
+        + `<span style="bottom:${height(peak / 2)}">${fmtUs(peak / 2)}</span><span style="bottom:0">0</span></div>`
+        + `<div class="layer-plot">${grid}${groups.join("")}</div>`;
+      const used = LAYER_SERIES.filter(([, , pick]) => layers.some((row) => ["a", "b"].some((side) => row[side] && pick(row[side]) >= 0.5)));
+      legend.innerHTML = used.map(([name, cls]) => `<span><i class="swatch ${cls}"></i>${escapeHtml(name)}</span>`).join("")
+        + `<span><i class="swatch side-a"></i>Left, lighter: A · ${escapeHtml(comparison.a.parallel)}</span>`
+        + `<span><i class="swatch side-b"></i>Right: B · ${escapeHtml(comparison.b.parallel)}</span>`
+        + (factor ? '<span><i class="swatch dashed"></i>Linear-scaling target for B</span>' : "")
+        + (stageLines ? '<span><i class="swatch stage"></i>Pipeline stage boundary</span>' : "");
     }
 
     function renderLayerTable(phase) {
@@ -4150,7 +4415,7 @@
         : [["Compute µs", "compute_us"], ["Comm µs", "comm_us"], ["Comm hidden µs", "overlap_us"], ["Exposed µs", "exposed_comm_us"], ["Idle µs", "idle_us"]];
       const format = (value) => (shareView ? (value == null ? "-" : (100 * value).toFixed(1)) : fmtUs(value));
       const peak = Math.max(0, ...layers.map((row) => Math.abs(row.change_us || 0)));
-      const groups = [["Layer", 1], ["Stage", 1], ["Wall µs", 3, "group group-start"], ...metrics.map(([label]) => [label, 2, "group group-start"])];
+      const groups = [["Layer", 1], ["Stage", 1], ["Time µs", 3, "group group-start"], ...metrics.map(([label]) => [label, 2, "group group-start"])];
       const sub = ["", "A/B", "A", "B", "Δ", ...metrics.flatMap(() => ["A", "B"])];
       const subHtml = sub.map((label, index) => {
         const start = index === 2 || (index >= 5 && (index - 5) % 2 === 0);
@@ -4160,18 +4425,22 @@
         const cells = [
           cell(escapeHtml(row.label)),
           cell(`S${row.stage_a}/S${row.stage_b}`),
-          cell(fmtUs(row.a?.total_us), "group-start"),
-          cell(fmtUs(row.b?.total_us)),
+          cell(fmtUs(row.a?.total_us), "group-start", "", wallNote(phase, row, "a")),
+          cell(fmtUs(row.b?.total_us), "", "", wallNote(phase, row, "b")),
           heatCell(row.change_us, peak, fmtSigned(row.change_us)),
           ...metrics.flatMap(([, key]) => [cell(format(row.a?.[key]), "group-start"), cell(format(row.b?.[key]))]),
         ];
         return `<tr>${cells.join("")}</tr>`;
       });
       const factor = analysisComparison?.mode === "scaling" ? analysisComparison.factor : 1;
-      document.getElementById("analysis-layer-sub").textContent = factor === 1
-        ? "Wall time of each decoder layer on the GPUs that run it, per token round; Δ = B − A"
-        : `Wall time of each decoder layer on the GPUs that run it, per token round; Δ = B − ${factor}×A (linear scaling)`;
-      const totals = [["Outside layers", phase.non_layer], ["Token round per GPU", phase.metrics]];
+      document.getElementById("analysis-layer-sub").textContent = "Time each decoder layer adds to a generated token, averaged over all GPUs; "
+        + "with the outside row the layers add up to the time per token. Hover a time for its wall time on the stage's GPUs. "
+        + (factor === 1 ? "Δ = B − A" : `Δ = B − ${factor}×A (linear scaling)`);
+      const totals = [
+        [`Decoder layers (${layers.length})`, phase.layer_sum],
+        ["Outside the layers", phase.non_layer],
+        ["Per token", phase.metrics],
+      ].filter(([, sides]) => sides);
       const footer = totals.map(([label, sides]) => {
         const a = sides.a;
         const b = sides.b;
@@ -4211,8 +4480,8 @@
       const rows = phase.kernels || [];
       const peak = Math.max(0, ...rows.map((row) => Math.abs(row.change_us)));
       document.getElementById("analysis-kernel-sub").textContent = comparison.mode === "same_gpus"
-        ? "µs per token round and GPU; Δ = B − A"
-        : `µs per token round and GPU; Δ = B − ${comparison.factor}×A (linear scaling)`;
+        ? "µs per generated token, averaged over the GPUs; Δ = B − A"
+        : `µs per generated token, averaged over the GPUs; Δ = B − ${comparison.factor}×A (linear scaling)`;
       const head = "<thead><tr><th>Kernel</th><th>Kind</th><th>A µs</th><th>B µs</th><th>Δ µs</th><th>Calls A</th><th>Calls B</th><th>Status</th></tr></thead>";
       const body = rows.map((row) => `<tr>${[
         `<td class="name" title="${escapeAttr(row.name)}">${escapeHtml(row.name)}</td>`,
@@ -4245,6 +4514,7 @@
       document.getElementById("analysis-unit").textContent = `${name} · ${analysisPhase.unit} · ${analysisPhase.steps.a} / ${analysisPhase.steps.b} profiled steps`;
       renderKpis(analysisPhase, analysisComparison);
       renderBreakdown(analysisPhase, analysisComparison);
+      renderLayerChart(analysisPhase, analysisComparison);
       renderLayerTable(analysisPhase);
       renderCommTable(analysisPhase);
       renderKernelTable(analysisPhase, analysisComparison);
@@ -4330,7 +4600,7 @@
       const pair = selectedRunPair();
       if (!pair) return;
       switchWorkspace("agent");
-      agentInput.value = `Compare run ${pair[0]} (A, baseline) with run ${pair[1]} (B) using compare_runs. Explain why B is faster or slower per token round: which categories, pipeline stages, layers, collectives and kernels changed, whether the change is beyond noise, and what to try next.`;
+      agentInput.value = `Compare run ${pair[0]} (A, baseline) with run ${pair[1]} (B) using compare_runs. Explain why B is faster or slower per generated token: how much comes from the decoder layers and how much from the work outside them, which categories, pipeline stages, layers, collectives and kernels changed, whether the change is beyond noise, and what to try next.`;
       if (agentUnlocked && !pendingAgentApproval && !agentAbortController) {
         sendAgentMessage();
       } else {

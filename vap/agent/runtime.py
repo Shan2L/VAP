@@ -636,7 +636,7 @@ class VAPAgentRuntime:
             "deeper evidence. For per-layer communication vs compute overlap and "
             "exposed RCCL of one run, call analyze_layer_overlap. To compare two "
             "runs or traces (an A/B change or a TP scaling step), call "
-            "compare_runs (it works per token round and GPU, so tensor- and "
+            "compare_runs (it works per generated token and GPU, so tensor- and "
             "pipeline-parallel layouts compare directly and pipeline bubbles show "
             "up as their own category); find run names with list_profile_runs. "
             "The Analysis tab writes the full templated report. Quote the "

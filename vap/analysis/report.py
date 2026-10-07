@@ -61,6 +61,10 @@ def report_data(
                 "stage": [row["stage_a"], row["stage_b"]],
                 "change_us": row["change_us"],
                 **{
+                    f"wall_us_{side}": (row.get("wall_us") or {}).get(side)
+                    for side in ("a", "b")
+                },
+                **{
                     f"{key}_{side}": (
                         None if row[side] is None else ta._rounded(row[side][key], 3)
                     )
@@ -99,15 +103,17 @@ def system_prompt(language: str) -> str:
         "You are the VAP performance analyst. You explain why vLLM inference with "
         "one parallel configuration (run A) is faster or slower than another (run B) "
         "on AMD GPUs, using only the measured data you are given.\n"
-        "Units: microseconds per token round per GPU. A token round is the time in "
-        "which every running sequence decodes one token; with pipeline parallelism a "
-        "token round needs one engine step per micro-batch. Values are means over the "
-        "GPUs of a run. With the same GPU count, change = B - A; with different GPU "
-        "counts, change = B - (gpus_A / gpus_B) x A, i.e. the loss against linear "
-        "scaling. Category changes add up to the token-round change. Per-layer values "
-        "are the wall time of a layer on the GPUs that run it; with pipeline "
-        "parallelism layers of different stages run concurrently, so per-layer times "
-        "do not add up to the token round.\n"
+        "Units: microseconds per generated token, averaged over the GPUs of a run "
+        "(the time in which every running sequence decodes one token; comparable to "
+        "TPOT; pipeline-parallel decode needs one engine step per micro-batch). With "
+        "the same GPU count, change = B - A; with different GPU counts, change = "
+        "B - (gpus_A / gpus_B) x A, i.e. the loss against linear scaling. Category "
+        "changes add up to the per-token change. 'parts' splits the time into the "
+        "decoder layers and the work outside them (embedding, LM head, sampling, "
+        "pipeline hand-off and bubble); the two parts add up to the time per token. "
+        "Per-layer values are each layer's share of that time (its wall time on the "
+        "GPUs of its pipeline stage, wall_us, times the stage's share of all GPUs), "
+        "so the layers add up to parts.layers.\n"
         "Rules: cite numbers exactly as given (you may compute simple ratios and "
         "differences, showing the inputs); never invent measurements; label anything "
         "not directly measured as a hypothesis; name the mechanism behind each effect "
@@ -121,15 +127,16 @@ def system_prompt(language: str) -> str:
         f"{headings}\n"
         f"Section guidance: '{sections[0]}': 3 to 5 bullets; the first bullet answers "
         "directly how much faster or slower B is and why, with numbers. "
-        f"'{sections[1]}': one compact table with A, B and change for token-round time, "
+        f"'{sections[1]}': one compact table with A, B and change for the time per token, "
         "compute share, communication share, communication hidden by compute, exposed "
         "communication share, pipeline bubble share and idle share. "
         f"'{sections[2]}': rank the category changes and explain each. "
         f"'{sections[3]}': TP communication (count, time per instance, wait vs "
         "transfer), pipeline behaviour (micro-batches, stage balance, bubble, stage "
         "hand-off) and scaling efficiency where relevant. "
-        f"'{sections[4]}': how layers differ, outliers and the part outside decoder "
-        f"layers. '{sections[5]}': 2 to 4 actionable items ordered by expected gain, "
+        f"'{sections[4]}': first how much of the change comes from the decoder "
+        "layers and how much from the work outside them (parts), then how layers "
+        f"differ and outliers. '{sections[5]}': 2 to 4 actionable items ordered by expected gain, "
         "each with the evidence and an expected effect; mark estimates as estimates. "
         f"'{sections[6]}': clock alignment, unmatched or unsegmented data and noise, "
         "and how far the conclusions can be trusted. Keep the whole report under 900 "
@@ -234,23 +241,23 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
         delta = tb_us - ta_us
         if zh:
             conclusion.append(
-                f"B（{b['parallel']}）每个 token 轮次需要 {_ms(tb_us)}，A（{a['parallel']}）为 {_ms(ta_us)}，"
+                f"B（{b['parallel']}）每生成一个 token 需要 {_ms(tb_us)}，A（{a['parallel']}）为 {_ms(ta_us)}，"
                 f"B {'慢' if delta > 0 else '快'} {abs(delta) / ta_us:.1%}（{_signed_ms(delta)}）。"
             )
         else:
             conclusion.append(
-                f"B ({b['parallel']}) needs {_ms(tb_us)} per token round vs {_ms(ta_us)} for A ({a['parallel']}): "
+                f"B ({b['parallel']}) needs {_ms(tb_us)} per generated token vs {_ms(ta_us)} for A ({a['parallel']}): "
                 f"{abs(delta) / ta_us:.1%} {'slower' if delta > 0 else 'faster'} ({_signed_ms(delta)})."
             )
     else:
         if zh:
             conclusion.append(
-                f"{a['parallel']}（{a['gpus']} 卡）→ {b['parallel']}（{b['gpus']} 卡）：每 token 轮次 {_ms(ta_us)} → {_ms(tb_us)}，"
+                f"{a['parallel']}（{a['gpus']} 卡）→ {b['parallel']}（{b['gpus']} 卡）：每个 token {_ms(ta_us)} → {_ms(tb_us)}，"
                 f"加速比 {p['speedup']:.2f}×，理想 {p['ideal_speedup']:.2f}×，扩展效率 {_pct(p['scaling_efficiency'])}。"
             )
         else:
             conclusion.append(
-                f"{a['parallel']} ({a['gpus']} GPUs) → {b['parallel']} ({b['gpus']} GPUs): token round {_ms(ta_us)} → {_ms(tb_us)}, "
+                f"{a['parallel']} ({a['gpus']} GPUs) → {b['parallel']} ({b['gpus']} GPUs): time per token {_ms(ta_us)} → {_ms(tb_us)}, "
                 f"speedup {p['speedup']:.2f}x vs ideal {p['ideal_speedup']:.2f}x, scaling efficiency {_pct(p['scaling_efficiency'])}."
             )
     top = [(name, value) for name, value in ranked if abs(value) >= 50][:3]
@@ -268,6 +275,41 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
             if zh
             else f"The change{reference} comes mainly from {parts}."
         )
+    split = p.get("parts")
+    if split and p.get("layers"):
+        factor = 1 if same else data["factor"]
+
+        def moved(part: str) -> tuple[float, str]:
+            group_a = ta._group_values(split[part]["a"])
+            group_b = ta._group_values(split[part]["b"])
+            change_by_group = {
+                name: group_b[name] - factor * group_a[name] for name in group_a
+            }
+            top_groups = sorted(change_by_group.items(), key=lambda item: -abs(item[1]))
+            detail = ("、" if zh else ", ").join(
+                f"{g(name) if zh else name} {_signed_ms(value)}"
+                for name, value in top_groups[:2]
+                if abs(value) >= 50
+            )
+            return sum(change_by_group.values()), detail
+
+        (inside, inside_detail), (outside, outside_detail) = moved("layers"), moved(
+            "outside"
+        )
+        count = len(p["layers"])
+        conclusion.append(
+            f"按位置拆分：{count} 个解码层合计 {_signed_ms(inside)}"
+            + (f"（{inside_detail}）" if inside_detail else "")
+            + f"，层外（embedding、LM head、采样、流水线交接和气泡）{_signed_ms(outside)}"
+            + (f"（{outside_detail}）" if outside_detail else "")
+            + "。"
+            if zh
+            else f"By location: the {count} decoder layers {_signed_ms(inside)}"
+            + (f" ({inside_detail})" if inside_detail else "")
+            + f", the work outside them (embedding, LM head, sampling, pipeline hand-off and bubble) {_signed_ms(outside)}"
+            + (f" ({outside_detail})" if outside_detail else "")
+            + "."
+        )
     for side, label in (("a", "A"), ("b", "B")):
         if len(stages[side]) > 1:
             busy_list = [(stage["stage"], busy(stage)) for stage in stages[side]]
@@ -279,22 +321,22 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
             )
             bubble = p["round"][side]["bubble"]
             conclusion.append(
-                f"{label} 的流水线不均衡：各 stage 每轮忙碌 {text}，S{slow[0]} 是瓶颈，其余 stage 平均每卡每轮空等 {_ms(bubble)}（流水线气泡）。"
+                f"{label} 的流水线不均衡：各 stage 每个 token 忙碌 {text}，S{slow[0]} 是瓶颈，其余 stage 平均每卡每个 token 空等 {_ms(bubble)}（流水线气泡）。"
                 if zh
-                else f"{label}'s pipeline is unbalanced: stages are busy {text} per token round; S{slow[0]} is the bottleneck and the others wait {_ms(bubble)} per GPU and round (pipeline bubble)."
+                else f"{label}'s pipeline is unbalanced: stages are busy {text} per generated token; S{slow[0]} is the bottleneck and the others wait {_ms(bubble)} per GPU and token (pipeline bubble)."
             )
     if ra and rb:
         conclusion.append(
-            f"TP all-reduce：A 每卡每轮 {ra[0]:.0f} 次 × {ra[1]:.1f} µs，B {rb[0]:.0f} 次 × {rb[1]:.1f} µs，"
+            f"TP all-reduce：A 每卡每个 token {ra[0]:.0f} 次 × {ra[1]:.1f} µs，B {rb[0]:.0f} 次 × {rb[1]:.1f} µs，"
             f"暴露的集合通信变化 {_signed_ms(groups.get('Exposed collective comm', 0.0))}。"
             if zh
-            else f"TP all-reduce: A {ra[0]:.0f} × {ra[1]:.1f} µs per GPU and round, B {rb[0]:.0f} × {rb[1]:.1f} µs; "
+            else f"TP all-reduce: A {ra[0]:.0f} × {ra[1]:.1f} µs per GPU and token, B {rb[0]:.0f} × {rb[1]:.1f} µs; "
             f"exposed collective communication changes by {_signed_ms(groups.get('Exposed collective comm', 0.0))}."
         )
 
     metric_rows = [
         (
-            "Token round" if not zh else "Token 轮次",
+            "Time per token" if not zh else "每 token 时间",
             _ms(ta_us),
             _ms(tb_us),
             _signed_ms(tb_us - (1 if same else data["factor"]) * ta_us),
@@ -345,16 +387,16 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
     parallel: list[str] = []
     if ra and rb:
         parallel.append(
-            f"- TP 通信：all-reduce 单次 {ra[1]:.1f} → {rb[1]:.1f} µs，每卡每轮 {ra[0]:.0f} → {rb[0]:.0f} 次；all-reduce 与计算在同一 stream 上串行，通信被遮盖比例 A {_pct(ma['overlap_ratio'])}、B {_pct(mb['overlap_ratio'])}。"
+            f"- TP 通信：all-reduce 单次 {ra[1]:.1f} → {rb[1]:.1f} µs，每卡每个 token {ra[0]:.0f} → {rb[0]:.0f} 次；all-reduce 与计算在同一 stream 上串行，通信被遮盖比例 A {_pct(ma['overlap_ratio'])}、B {_pct(mb['overlap_ratio'])}。"
             if zh
-            else f"- TP communication: all-reduce {ra[1]:.1f} → {rb[1]:.1f} µs per instance, {ra[0]:.0f} → {rb[0]:.0f} per GPU and round; hidden share A {_pct(ma['overlap_ratio'])}, B {_pct(mb['overlap_ratio'])}."
+            else f"- TP communication: all-reduce {ra[1]:.1f} → {rb[1]:.1f} µs per instance, {ra[0]:.0f} → {rb[0]:.0f} per GPU and token; hidden share A {_pct(ma['overlap_ratio'])}, B {_pct(mb['overlap_ratio'])}."
         )
     spr, seqs = p["steps_per_round"], p["sequences_per_step"]
     if spr["a"] != spr["b"]:
         parallel.append(
-            f"- Micro-batch：A 每轮 {spr['a']:.0f} 个 step × {seqs['a']:.0f} 条序列，B 每轮 {spr['b']:.0f} 个 step × {seqs['b']:.0f} 条；每个 micro-batch 都要把本 stage 的权重读一遍，所以 decode 的 GEMM 时间随 micro-batch 数增加（GEMM {_signed_ms(change['gemm'])}）。"
+            f"- Micro-batch：A 每个 token {spr['a']:.0f} 个 step × {seqs['a']:.0f} 条序列，B 每个 token {spr['b']:.0f} 个 step × {seqs['b']:.0f} 条；每个 micro-batch 都要把本 stage 的权重读一遍，所以 decode 的 GEMM 时间随 micro-batch 数增加（GEMM {_signed_ms(change['gemm'])}）。"
             if zh
-            else f"- Micro-batches: A runs {spr['a']:.0f} step(s) × {seqs['a']:.0f} sequences per round, B {spr['b']:.0f} × {seqs['b']:.0f}; every micro-batch streams the stage's weights again, so decode GEMM time grows (GEMM {_signed_ms(change['gemm'])})."
+            else f"- Micro-batches: A runs {spr['a']:.0f} step(s) × {seqs['a']:.0f} sequences per token, B {spr['b']:.0f} × {seqs['b']:.0f}; every micro-batch streams the stage's weights again, so decode GEMM time grows (GEMM {_signed_ms(change['gemm'])})."
         )
     for side, label in (("a", "A"), ("b", "B")):
         if len(stages[side]) > 1:
@@ -367,9 +409,9 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
                 )
     if not same:
         parallel.append(
-            f"- 扩展效率 {_pct(p['scaling_efficiency'])}：理想情况下 {b['parallel']} 每轮应为 {_ms(data['factor'] * ta_us)}，实测 {_ms(tb_us)}。"
+            f"- 扩展效率 {_pct(p['scaling_efficiency'])}：理想情况下 {b['parallel']} 每个 token 应为 {_ms(data['factor'] * ta_us)}，实测 {_ms(tb_us)}。"
             if zh
-            else f"- Scaling efficiency {_pct(p['scaling_efficiency'])}: ideal {b['parallel']} round {_ms(data['factor'] * ta_us)}, measured {_ms(tb_us)}."
+            else f"- Scaling efficiency {_pct(p['scaling_efficiency'])}: ideal {b['parallel']} time per token {_ms(data['factor'] * ta_us)}, measured {_ms(tb_us)}."
         )
 
     layers = [row for row in p.get("layers", []) if row["change_us"] is not None]
@@ -378,9 +420,9 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
         changes = [row["change_us"] for row in layers]
         worst = sorted(layers, key=lambda row: -row["change_us"])[:3]
         layer_lines.append(
-            f"- 每层每轮时间变化 {min(changes):+.0f} 到 {max(changes):+.0f} µs，中位数 {statistics.median(changes):+.0f} µs；变化最大：{'、'.join(f'{row['label']} {row['change_us']:+.0f} µs' for row in worst)}。"
+            f"- 每层占每个 token 的时间变化 {min(changes):+.0f} 到 {max(changes):+.0f} µs，中位数 {statistics.median(changes):+.0f} µs；变化最大：{'、'.join(f'{row['label']} {row['change_us']:+.0f} µs' for row in worst)}。"
             if zh
-            else f"- Per layer the token-round time changes by {min(changes):+.0f} to {max(changes):+.0f} µs (median {statistics.median(changes):+.0f} µs); largest: {', '.join(f'{row['label']} {row['change_us']:+.0f} µs' for row in worst)}."
+            else f"- Per layer, its share of the time per token changes by {min(changes):+.0f} to {max(changes):+.0f} µs (median {statistics.median(changes):+.0f} µs); largest: {', '.join(f'{row['label']} {row['change_us']:+.0f} µs' for row in worst)}."
         )
     non = p.get("non_layer", {})
     if non:
@@ -397,9 +439,9 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
             gap = busy(s1) - busy(s0)
             per_layer = (
                 statistics.fmean(
-                    row[f"total_us_{side}"]
+                    row[f"wall_us_{side}"]
                     for row in layers
-                    if row[f"total_us_{side}"] is not None
+                    if row[f"wall_us_{side}"] is not None
                 )
                 if layers
                 else 0.0
@@ -415,9 +457,9 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
                 )
                 left = abs(abs(gap) - 2 * move * per_layer)
                 recs.append(
-                    f"- 平衡流水线（{label}）：S{1 if gap > 0 else 0} 每轮多忙 {_ms(abs(gap))}，每层约 {per_layer:.0f} µs/轮；可尝试 `VLLM_PP_LAYER_PARTITION={split}`，估计 stage 间差距降到约 {_ms(left)}/轮（估算，需实测）。"
+                    f"- 平衡流水线（{label}）：S{1 if gap > 0 else 0} 每个 token 多忙 {_ms(abs(gap))}，每层约 {per_layer:.0f} µs；可尝试 `VLLM_PP_LAYER_PARTITION={split}`，估计 stage 间差距降到约 {_ms(left)}（估算，需实测）。"
                     if zh
-                    else f"- Balance the pipeline ({label}): S{1 if gap > 0 else 0} is busier by {_ms(abs(gap))} per round at about {per_layer:.0f} µs per layer; try `VLLM_PP_LAYER_PARTITION={split}`, estimated to cut the stage gap to about {_ms(left)} per round (estimate; measure it)."
+                    else f"- Balance the pipeline ({label}): S{1 if gap > 0 else 0} is busier by {_ms(abs(gap))} per token at about {per_layer:.0f} µs per layer; try `VLLM_PP_LAYER_PARTITION={split}`, estimated to cut the stage gap to about {_ms(left)} per token (estimate; measure it)."
                 )
             break
     if spr["b"] > spr["a"] and change["gemm"] > 0:
@@ -461,9 +503,9 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
     ]
     if se:
         quality.append(
-            f"- 轮次差的 step 间标准误为 {se:.1f} µs；结论只覆盖本次采样窗口，跨运行波动需重复运行确认。"
+            f"- 每 token 时间差的 step 间标准误为 {se:.1f} µs；结论只覆盖本次采样窗口，跨运行波动需重复运行确认。"
             if zh
-            else f"- Step-to-step standard error of the round difference is {se:.1f} µs; run-to-run variance needs repeated runs."
+            else f"- Step-to-step standard error of the per-token difference is {se:.1f} µs; run-to-run variance needs repeated runs."
         )
 
     body = {

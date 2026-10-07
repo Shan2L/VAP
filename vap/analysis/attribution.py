@@ -1241,9 +1241,9 @@ METHOD_LINES = (
     "spins until its peers arrive). Pipeline sends and receives count their fastest "
     "instance as transfer and the rest as waiting. Neither uses cross-rank clocks.",
     "Communicators are mapped to parallel dimensions by the ranks they span "
-    "(TP, PP, DP, EP). Values are per token round: the time in which every running "
+    "(TP, PP, DP, EP). Values are per generated token: the time in which every running "
     "sequence decodes one token (pipeline-parallel decode needs one step per "
-    "micro-batch), averaged over the GPUs of the run.",
+    "micro-batch; comparable to TPOT), averaged over the GPUs of the run.",
 )
 
 
@@ -1293,11 +1293,25 @@ def _non_layer(data: dict[str, Any]) -> dict[str, float]:
     return _mean(samples)
 
 
+def _stage_gpu_share(data: dict[str, Any]) -> dict[int, float]:
+    """Fraction of the run's GPUs in each pipeline stage."""
+    stages = data.get("stages") or []
+    total = sum(len(stage["ranks"]) for stage in stages)
+    return (
+        {stage["stage"]: len(stage["ranks"]) / total for stage in stages}
+        if total
+        else {}
+    )
+
+
 def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
-    """Changes from base (A) to target (B) per token round and GPU. With the
-    same GPU count the change is target - base (mode "same_gpus"); otherwise it
-    is measured against linear scaling, target - (gpus_A / gpus_B) x base (mode
-    "scaling"). Per segment, the category changes sum to the segment change."""
+    """Changes from base (A) to target (B) per generated token, averaged over
+    the GPUs. With the same GPU count the change is target - base (mode
+    "same_gpus"); otherwise it is measured against linear scaling, target -
+    (gpus_A / gpus_B) x base (mode "scaling"). A decoder layer counts with its
+    share of the token: its wall time on the GPUs of its pipeline stage
+    ("wall_us") times that stage's share of all GPUs, so the layers
+    ("layer_sum") and "non_layer" add up to the time per token."""
     head_a, head_b = run_header(base), run_header(target)
     factor = head_a["gpus"] / head_b["gpus"]
     phases: dict[str, Any] = {}
@@ -1319,6 +1333,7 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
             if all(len(values) > 1 for values in series)
             else None
         )
+        share_a, share_b = _stage_gpu_share(left), _stage_gpu_share(right)
         layers = []
         labels_a, labels_b = _decoder_layers(left["segments"]), _decoder_layers(
             right["segments"]
@@ -1326,17 +1341,25 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
         for label in sorted(
             set(labels_a) | set(labels_b), key=lambda text: int(text[1:])
         ):
-            side_a = _scaled(left["mean"][label], spr_a) if label in labels_a else None
-            side_b = _scaled(right["mean"][label], spr_b) if label in labels_b else None
+            stage_a = left.get("segment_stage", {}).get(label, 0)
+            stage_b = right.get("segment_stage", {}).get(label, 0)
+            wall_a = _scaled(left["mean"][label], spr_a) if label in labels_a else None
+            wall_b = _scaled(right["mean"][label], spr_b) if label in labels_b else None
+            side_a = _scaled(wall_a, share_a.get(stage_a, 1.0)) if wall_a else None
+            side_b = _scaled(wall_b, share_b.get(stage_b, 1.0)) if wall_b else None
             layers.append(
                 {
                     "label": label,
-                    "stage_a": left.get("segment_stage", {}).get(label, 0),
-                    "stage_b": right.get("segment_stage", {}).get(label, 0),
+                    "stage_a": stage_a,
+                    "stage_b": stage_b,
                     "a": side_a,
                     "b": side_b,
                     "a_metrics": derived_metrics(side_a) if side_a else None,
                     "b_metrics": derived_metrics(side_b) if side_b else None,
+                    "wall_us": {
+                        "a": sum(wall_a.values()) if wall_a else None,
+                        "b": sum(wall_b.values()) if wall_b else None,
+                    },
                     "change_us": (
                         sum(side_b.values()) - factor * sum(side_a.values())
                         if side_a and side_b
@@ -1344,6 +1367,13 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
                     ),
                 }
             )
+        layer_sum = {
+            side: {
+                category: sum(row[side][category] for row in layers if row[side])
+                for category in CATEGORIES
+            }
+            for side in ("a", "b")
+        }
         stages = {
             side: [
                 {
@@ -1358,7 +1388,7 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
             for side, data, spr in (("a", left, spr_a), ("b", right, spr_b))
         }
         phases[phase] = {
-            "unit": "µs per token round per GPU",
+            "unit": "µs per generated token, mean over GPUs",
             "steps_per_round": {"a": spr_a, "b": spr_b},
             "sequences_per_step": {
                 "a": left.get("sequences_per_step"),
@@ -1377,6 +1407,7 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
                 "a": _scaled(_non_layer(left), spr_a),
                 "b": _scaled(_non_layer(right), spr_b),
             },
+            "layer_sum": layer_sum,
             "stages": stages,
             "layers": layers,
             "collectives": _collective_changes(
@@ -1510,12 +1541,12 @@ def analysis_findings(result: dict[str, Any]) -> list[dict[str, str]]:
         total = derived["total_us"]
         if not total:
             continue
-        unit = "token round" if spr != 1 else "step"
+        unit = "generated token" if spr != 1 else "step"
         add(
             "finding",
             f"{phase}: {_ms(total)} per {unit} ({data['steps']} steps of "
             f"{data['sequences_per_step']:.0f} sequences"
-            + (f", {spr:.0f} steps per token round" if spr != 1 else "")
+            + (f", {spr:.0f} engine steps per token" if spr != 1 else "")
             + f"): compute {_pct(derived['compute_share'])}, communication {_pct(derived['comm_share'])} "
             f"of which {_pct(derived['overlap_ratio'])} hidden by compute, exposed communication "
             f"{_pct(derived['exposed_comm_share'])}, pipeline bubble {_pct(derived['bubble_share'])}, "
@@ -1540,8 +1571,8 @@ def analysis_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                 "finding",
                 f"{phase}: pipeline stages are busy "
                 + ", ".join(f"S{stage} {_ms(value)}" for stage, value in busy)
-                + f" per token round; stage {slow[0]} is the bottleneck and the other stages wait for it "
-                f"(bubble {_ms(step['bubble'] * spr)} per GPU and token round).",
+                + f" per generated token; stage {slow[0]} is the bottleneck and the other stages wait for it "
+                f"(bubble {_ms(step['bubble'] * spr)} per GPU and token).",
             )
         tp_rows = [
             row
@@ -1555,8 +1586,8 @@ def analysis_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             ) / sum(row["count_per_step"] for row in tp_rows)
             add(
                 "finding",
-                f"{phase}: {count:.0f} TP all-reduces per token round and GPU, {mean:.1f} µs each on average "
-                f"({_ms(count * mean)} per token round)"
+                f"{phase}: {count:.0f} TP all-reduces per {unit} and GPU, {mean:.1f} µs each on average "
+                f"({_ms(count * mean)} per {unit})"
                 + (
                     "; they run on the compute stream, so their time adds directly to the step."
                     if not quality.get("streams", {}).get("comm_on_separate_stream")
@@ -1576,7 +1607,7 @@ def analysis_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             ]
             text = (
                 f"{phase}: decoder layers take {min(totals.values()):.0f}-{max(totals.values()):.0f} µs "
-                f"per token round (median {median:.0f} µs)"
+                f"per {unit} on the GPUs of their stage (median {median:.0f} µs)"
             )
             if outliers:
                 text += "; >10% from median: " + ", ".join(
@@ -1628,13 +1659,13 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
         if same:
             delta = total_b - total_a
             text = (
-                f"{phase}: B ({b['parallel']}) needs {_ms(total_b)} per token round vs A ({a['parallel']}) "
+                f"{phase}: B ({b['parallel']}) needs {_ms(total_b)} per generated token vs A ({a['parallel']}) "
                 f"{_ms(total_a)}: {delta / total_a:+.1%}, B is {'slower' if delta > 0 else 'faster'}"
             )
         else:
             text = (
-                f"{phase}: {a['parallel']} ({a['gpus']} GPUs) → {b['parallel']} ({b['gpus']} GPUs) changes the token "
-                f"round from {_ms(total_a)} to {_ms(total_b)}: speedup {data['speedup']:.2f}x vs ideal "
+                f"{phase}: {a['parallel']} ({a['gpus']} GPUs) → {b['parallel']} ({b['gpus']} GPUs) changes the time "
+                f"per generated token from {_ms(total_a)} to {_ms(total_b)}: speedup {data['speedup']:.2f}x vs ideal "
                 f"{data['ideal_speedup']:.2f}x, scaling efficiency {_pct(data['scaling_efficiency'])}"
             )
         noise = data.get("round_delta_se_us")
@@ -1649,9 +1680,9 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
         net = sum(grouped.values())
         ranked = sorted(grouped.items(), key=lambda item: -abs(item[1]))
         reference = (
-            "per token round and GPU"
+            "per generated token (GPU mean)"
             if same
-            else "against linear scaling, per token round and GPU"
+            else "against linear scaling, per generated token (GPU mean)"
         )
         add(
             "decomposition",
@@ -1663,12 +1694,45 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             )
             + ".",
         )
+        if data["layers"]:
+            pieces = []
+            for name, values in (
+                (
+                    f"the {len(data['layers'])} decoder layer"
+                    + ("s" if len(data["layers"]) != 1 else ""),
+                    data["layer_sum"],
+                ),
+                (
+                    "the work outside them (embedding, LM head, sampling, "
+                    "pipeline hand-off and bubble)",
+                    data["non_layer"],
+                ),
+            ):
+                group_a, group_b = _group_values(values["a"]), _group_values(
+                    values["b"]
+                )
+                moved = {
+                    group: group_b[group] - result["factor"] * group_a[group]
+                    for group in group_a
+                }
+                detail = ", ".join(
+                    f"{group} {value / 1000:+.2f} ms"
+                    for group, value in sorted(
+                        moved.items(), key=lambda item: -abs(item[1])
+                    )[:2]
+                    if abs(value) >= 1
+                )
+                pieces.append(
+                    f"{name} {sum(moved.values()) / 1000:+.2f} ms"
+                    + (f" ({detail})" if detail else "")
+                )
+            add("split", f"{phase}: by location, " + "; ".join(pieces) + ".")
         spr = data["steps_per_round"]
         seqs = data["sequences_per_step"]
         if spr["a"] != spr["b"]:
             add(
                 "pipeline",
-                f"{phase}: A runs {spr['a']:.0f} step(s) of {seqs['a']:.0f} sequences per token round, B runs "
+                f"{phase}: A runs {spr['a']:.0f} step(s) of {seqs['a']:.0f} sequences per generated token, B runs "
                 f"{spr['b']:.0f} step(s) of {seqs['b']:.0f}: pipeline micro-batches make every GPU run its layers once "
                 "per micro-batch, so weights are streamed from memory that many times per token.",
             )
@@ -1689,20 +1753,20 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                     "pipeline",
                     f"{phase}: in {label} the stages are busy "
                     + ", ".join(f"S{stage} {_ms(value)}" for stage, value in busy)
-                    + f" per token round; S{slow[0]} is the bottleneck (it also runs the "
+                    + f" per generated token; S{slow[0]} is the bottleneck (it also runs the "
                     + (
                         "LM head, logits gather and sampling"
                         if slow[0] == len(stages) - 1
                         else "embedding"
                     )
                     + f"), so the other stages idle in a pipeline bubble of "
-                    f"{_ms(data['round'][side]['bubble'])} per GPU and token round.",
+                    f"{_ms(data['round'][side]['bubble'])} per GPU and token.",
                 )
         compute = sum(change[c] for c in COMPUTE)
         if abs(compute) >= 0.05 * max(total_a, total_b):
             add(
                 "compute",
-                f"{phase}: compute per token round and GPU changes by {compute / 1000:+.2f} ms "
+                f"{phase}: compute per generated token (GPU mean) changes by {compute / 1000:+.2f} ms "
                 f"(GEMM {change['gemm'] / 1000:+.2f}, attention {change['attention'] / 1000:+.2f}, "
                 f"other {change['other'] / 1000:+.2f} ms"
                 + ("" if same else ", against linear scaling")
@@ -1739,7 +1803,7 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             count_b, mean_b, wait_b = stats("b")
             add(
                 "communication",
-                f"{phase}: TP all-reduce per token round and GPU: A {count_a:.0f} × {mean_a:.1f} µs "
+                f"{phase}: TP all-reduce per generated token and GPU: A {count_a:.0f} × {mean_a:.1f} µs "
                 f"({_ms(count_a * mean_a)}, wait {wait_a:.1f} µs each), B {count_b:.0f} × {mean_b:.1f} µs "
                 f"({_ms(count_b * mean_b)}, wait {wait_b:.1f} µs each). Exposed collective communication changes by "
                 f"{sum(change[c] for c in COMM) / 1000:+.2f} ms, hidden communication by {change['overlap'] / 1000:+.2f} ms.",
@@ -1748,14 +1812,14 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             add(
                 "communication",
                 f"{phase}: exposed pipeline transfer is {data['round']['a']['pp_xfer']:.0f} µs (A) vs "
-                f"{data['round']['b']['pp_xfer']:.0f} µs (B) per token round; the stage hand-off itself is cheap, "
+                f"{data['round']['b']['pp_xfer']:.0f} µs (B) per generated token; the stage hand-off itself is cheap, "
                 "the cost of pipelining is the bubble.",
             )
         kernels = data.get("kernels") or []
         if kernels:
             add(
                 "kernels",
-                f"{phase}: kernels with the largest change per token round"
+                f"{phase}: kernels with the largest change per generated token"
                 + ("" if same else " against linear scaling")
                 + ": "
                 + ", ".join(
@@ -1769,7 +1833,7 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             changes = [row["change_us"] for row in layers]
             add(
                 "layers",
-                f"{phase}: per decoder layer the token-round time changes by {min(changes):+.0f} to "
+                f"{phase}: per decoder layer, its share of the time per generated token changes by {min(changes):+.0f} to "
                 f"{max(changes):+.0f} µs (median {statistics.median(changes):+.0f} µs)"
                 + ("" if same else " against linear scaling")
                 + ".",
@@ -1946,7 +2010,7 @@ def render_analysis_markdown(result: dict[str, Any]) -> str:
         lines.append(f"- {prefix}{item['text']}")
     for phase, data in result["phases"].items():
         spr = steps_per_round(result, phase)
-        unit = "per token round" if spr != 1 else "per step"
+        unit = "per generated token" if spr != 1 else "per step"
         step = _scaled(data["mean"][STEP_KEY], spr)
         total = sum(step.values())
         lines += [
@@ -2089,6 +2153,8 @@ def comparison_layer_tables(data: dict[str, Any]) -> list[str]:
                 pick(b, "overlap_us"),
                 pick(a, "exposed_comm_us"),
                 pick(b, "exposed_comm_us"),
+                row["wall_us"]["a"],
+                row["wall_us"]["b"],
             ]
         )
         share_rows.append(
@@ -2106,13 +2172,17 @@ def comparison_layer_tables(data: dict[str, Any]) -> list[str]:
                 ),
             ]
         )
-    lines = ["#### Time per layer (µs per token round)", ""]
+    lines = [
+        "#### Time per layer (µs per generated token: the layer's share on all GPUs; "
+        "Wall = its time on the GPUs of its pipeline stage)",
+        "",
+    ]
     lines += _md_table(
         [
             "Layer",
             "Stage A/B",
-            "Wall A",
-            "Wall B",
+            "A",
+            "B",
             "Δ",
             "Compute A",
             "Compute B",
@@ -2122,6 +2192,8 @@ def comparison_layer_tables(data: dict[str, Any]) -> list[str]:
             "Overlap B",
             "Exposed A",
             "Exposed B",
+            "Wall A",
+            "Wall B",
         ],
         time_rows,
     )
@@ -2174,12 +2246,12 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
     )
     for phase, data in result["phases"].items():
         change_label = "Δ (B − A)" if same else f"Loss (B − {result['factor']:.3g}·A)"
-        lines += [f"## Phase `{phase}` (µs per token round, mean over GPUs)", ""]
+        lines += [f"## Phase `{phase}` (µs per generated token, mean over GPUs)", ""]
         lines += _md_table(
             ["", "A", "B", change_label],
             [
                 (
-                    "Steps per token round",
+                    "Engine steps per token",
                     f"{data['steps_per_round']['a']:.2f}",
                     f"{data['steps_per_round']['b']:.2f}",
                     "",
@@ -2191,7 +2263,7 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
                     "",
                 ),
                 (
-                    "Token round µs",
+                    "Time per token µs",
                     data["round_us"]["a"],
                     data["round_us"]["b"],
                     data["round_us"]["b"] - result["factor"] * data["round_us"]["a"],
@@ -2246,7 +2318,10 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
             ],
         )
         if any(len(data["stages"][side]) > 1 for side in ("a", "b")):
-            lines += ["### Pipeline stages (µs per token round)", ""]
+            lines += [
+                "### Pipeline stages (µs per generated token, per GPU of the stage)",
+                "",
+            ]
             lines += _md_table(
                 ["Run", "Stage", "Layers", *LAYER_HEADERS[1:]],
                 [
@@ -2260,9 +2335,31 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
                     for stage in data["stages"][side]
                 ],
             )
+        lines += [
+            "### Decoder layers vs outside them (µs per generated token, mean over GPUs)",
+            "",
+        ]
+        lines += _md_table(
+            ["Part", *(name for name, _ in GROUPS), "Total"],
+            [
+                [
+                    f"{label} {side.upper()}",
+                    *_group_values(values[side]).values(),
+                    sum(values[side].values()),
+                ]
+                for label, values in (
+                    ("Decoder layers", data["layer_sum"]),
+                    ("Outside", data["non_layer"]),
+                )
+                for side in ("a", "b")
+            ],
+        )
         lines += ["### Decoder layers", ""]
         lines += comparison_layer_tables(data)
-        lines += ["### Outside decoder layers (µs per token round, per GPU)", ""]
+        lines += [
+            "### Outside decoder layers (µs per generated token, mean over GPUs)",
+            "",
+        ]
         lines += _md_table(
             LAYER_HEADERS,
             [
@@ -2272,7 +2369,7 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
         )
         rows = data.get("collectives") or []
         if rows:
-            lines += ["### Communication per token round and GPU", ""]
+            lines += ["### Communication (per generated token, mean over GPUs)", ""]
 
             def side(stats: dict[str, Any] | None, key: str) -> Any:
                 return None if stats is None else stats[key]
@@ -2320,7 +2417,7 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
         kernels = data.get("kernels") or []
         if kernels:
             lines += [
-                "### Kernels with the largest change (µs per token round and GPU)",
+                "### Kernels with the largest change (µs per generated token, mean over GPUs)",
                 "",
             ]
             lines += _md_table(
@@ -2536,6 +2633,8 @@ def write_comparison_csv(result: dict[str, Any], path: Path) -> None:
                 "stage_b",
                 *(f"{key}_{side}" for key in keys for side in ("a", "b")),
                 "change_us",
+                "wall_us_a",
+                "wall_us_b",
             ]
         )
         for phase, data in result["phases"].items():
@@ -2553,6 +2652,14 @@ def write_comparison_csv(result: dict[str, Any], path: Path) -> None:
                         row["stage_b"],
                         *values,
                         "" if row["change_us"] is None else round(row["change_us"], 3),
+                        *(
+                            (
+                                ""
+                                if row["wall_us"][side] is None
+                                else round(row["wall_us"][side], 3)
+                            )
+                            for side in ("a", "b")
+                        ),
                     ]
                 )
 
@@ -2611,7 +2718,9 @@ def agent_summary(
         spr = steps_per_round(result, phase)
         step = _scaled(data["mean"][STEP_KEY], spr)
         entry: dict[str, Any] = {
-            "unit": "µs per token round per GPU" if spr != 1 else "µs per step per GPU",
+            "unit": (
+                "µs per generated token per GPU" if spr != 1 else "µs per step per GPU"
+            ),
             "steps": data["steps"],
             "sequences_per_step": data["sequences_per_step"],
             "steps_per_round": spr,
@@ -2689,6 +2798,13 @@ def compare_summary(
         entry["non_layer"] = _rounded(
             {side: derived_metrics(data["non_layer"][side]) for side in ("a", "b")}
         )
+        entry["layer_sum"] = _rounded(
+            {side: derived_metrics(data["layer_sum"][side]) for side in ("a", "b")}
+        )
+        entry["parts"] = {
+            "layers": _rounded(data["layer_sum"]),
+            "outside": _rounded(data["non_layer"]),
+        }
         entry["stages"] = {
             side: [
                 {
@@ -2715,6 +2831,7 @@ def compare_summary(
                     "stage_b": row["stage_b"],
                     "a": _rounded(row["a_metrics"], 4),
                     "b": _rounded(row["b_metrics"], 4),
+                    "wall_us": _rounded(row["wall_us"]),
                     "change_us": _rounded(row["change_us"]),
                 }
                 for row in data["layers"]
