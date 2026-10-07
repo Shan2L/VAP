@@ -13,9 +13,7 @@ from .core import (
 )
 from .core import fit_affine as _fit_affine_values
 from .core import percentile as _percentile
-from .core import (
-    select_candidate,
-)
+from .core import select_candidate
 from .core import split_train_validation as _split_train_validation
 
 

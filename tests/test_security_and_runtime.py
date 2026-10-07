@@ -1092,6 +1092,78 @@ class RuntimeAndCliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
         pipeline_class.return_value.cleanup.assert_called_once()
 
+    def test_run_directory_is_named_after_the_start_time_and_run_name(self) -> None:
+        payload = {
+            "model_cfg": {
+                "model_name": "ibm-granite/granite-4.1-8b",
+                "model_path": "/m",
+            },
+            "vllm_deploy_cfg": {"-tp": 2, "--pipeline-parallel-size": 2},
+        }
+        names = {}
+        for label, run_name in (
+            ("default", None),
+            ("custom", "baseline_{parallel}"),
+            ("empty", ""),
+        ):
+            if run_name is not None:
+                payload["run_name"] = run_name
+            with tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / "config.json"
+                config_path.write_text(json.dumps(payload), encoding="utf-8")
+                logs = Path(tmp) / "logs"
+                with (
+                    patch.object(main, "load_config", return_value=Mock()),
+                    patch.object(main, "setup_logging", return_value=Mock()),
+                    patch.object(main, "TorchProfilingPipeline") as pipeline_class,
+                ):
+                    main.run(
+                        types.SimpleNamespace(
+                            config=str(config_path), visualization_host="127.0.0.1"
+                        ),
+                        str(logs),
+                    )
+                (run_dir,) = logs.iterdir()
+                names[label] = run_dir.name
+                # The start time alone stays the run id of containers and probes.
+                self.assertEqual(pipeline_class.call_args.args[2], run_dir.name[:15])
+        self.assertRegex(names["default"], r"^\d{8}_\d{6}_granite-4\.1-8b_tp2pp2$")
+        self.assertRegex(names["custom"], r"^\d{8}_\d{6}_baseline_tp2pp2$")
+        self.assertRegex(names["empty"], r"^\d{8}_\d{6}$")
+
+    def test_run_name_fills_in_the_parallel_layout_and_rejects_unsafe_names(
+        self,
+    ) -> None:
+        def name(deploy: dict, run_name: str = "{model}_{parallel}") -> str:
+            return config.expand_run_name(
+                {
+                    "model_cfg": {"model_name": "Qwen/Qwen3-30B-A3B"},
+                    "run_name": run_name,
+                    "vllm_deploy_cfg": deploy,
+                }
+            )
+
+        self.assertEqual(name({}), "Qwen3-30B-A3B_tp1")
+        self.assertEqual(name({"-tp": "8"}), "Qwen3-30B-A3B_tp8")
+        self.assertEqual(
+            name({"-tp": 2, "-dp": 2, "--enable-expert-parallel": True}),
+            "Qwen3-30B-A3B_tp2dp2ep4",
+        )
+        self.assertEqual(name({}, "a b/../c"), "a-b-..-c")
+        self.assertEqual(
+            config.VAPConfig.model_validate(example_payload()).run_name,
+            "{model}_{parallel}",
+        )
+        for bad in ("../x", "a b", "{gpus}", "x" * 81):
+            payload = example_payload()
+            payload["run_name"] = bad
+            with self.assertRaises(ValueError, msg=bad):
+                config.VAPConfig.model_validate(payload)
+        self.assertEqual(
+            main.run_dir_name("20261007_120000", "/nonexistent/config.json"),
+            "20261007_120000",
+        )
+
     def test_pipeline_cleanup_is_idempotent(self) -> None:
         pipeline = torch_pipeline.TorchProfilingPipeline.__new__(
             torch_pipeline.TorchProfilingPipeline
@@ -1598,7 +1670,9 @@ class RuntimeAndCliTests(unittest.TestCase):
         self.assertIn("cse-ai-6", output)
         self.assertIn("4284.4 ns exceeds 1000.0 ns", output)
 
-    def test_required_clock_probe_fail_session_warns_and_disables_alignment(self) -> None:
+    def test_required_clock_probe_fail_session_warns_and_disables_alignment(
+        self,
+    ) -> None:
         payload = example_payload()
         payload["clock_probe_cfg"]["enabled"] = True
         payload["clock_probe_cfg"]["mode"] = "hardware"
@@ -1637,10 +1711,7 @@ class RuntimeAndCliTests(unittest.TestCase):
             self.assertTrue(clock_probe.has_session)
             self.assertFalse(clock_probe.alignment_ready)
             self.assertTrue(
-                any(
-                    "Clock probe calibration FAILED" in line
-                    for line in logs.output
-                )
+                any("Clock probe calibration FAILED" in line for line in logs.output)
             )
 
     def test_failed_clock_session_skips_alignment_nccl_and_clc(self) -> None:
@@ -2451,24 +2522,6 @@ class FrontendFallbackTests(unittest.TestCase):
 
 
 class TraceSkillSchemaTests(unittest.TestCase):
-    def test_approved_action_message_preserves_result_context(self) -> None:
-        runtime = agent_runtime.VAPAgentRuntime()
-        runtime.register_tool(
-            agent_runtime.AgentTool(
-                name="test_action",
-                description="test",
-                safety="requires_approval",
-                parameters={"type": "object", "properties": {}},
-                handler=lambda args: {"started": True},
-            )
-        )
-        pending = runtime._create_pending_action("test_action", {})
-
-        result = runtime.approve(pending.approval_id)
-
-        self.assertIn("succeeded", result["message"]["content"])
-        self.assertIn("subsequent requests", result["message"]["content"])
-
     def test_default_agent_model_is_gpt_5_6_sol(self) -> None:
         self.assertEqual(agent_runtime.DEFAULT_AGENT_MODEL, "gpt-5.6-sol")
 

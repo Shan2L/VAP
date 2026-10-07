@@ -133,7 +133,11 @@ You can also run VAP directly with a config file:
 vap run --config ~/.vap/config.json --visualization-host 127.0.0.1
 ```
 
-Run outputs are written under `~/.vap/logs/`.
+Run outputs are written under `~/.vap/logs/<start time>_<run_name>/`. `run_name`
+in the config fills in `{model}` (the last part of the model name) and
+`{parallel}` (for example `tp2pp2`); the default `{model}_{parallel}` gives
+directories such as `20261007_153000_granite-4.1-8b_tp2pp2`. Set it to any name
+of letters, digits, `.`, `_` and `-`, or to an empty string for the start time only.
 
 To remove generated logs:
 

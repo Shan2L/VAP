@@ -60,9 +60,7 @@ class ClockProbeLifecycle:
         if not self.has_session:
             return False
         try:
-            session = json.loads(
-                self.local_session_path.read_text(encoding="utf-8")
-            )
+            session = json.loads(self.local_session_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return False
         return str(session.get("status") or "").upper() == "PASS"

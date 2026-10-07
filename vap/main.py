@@ -8,9 +8,9 @@ from datetime import datetime
 
 from vap.pipelines.torch_profiling_pipeline import TorchProfilingPipeline
 
-from .config import VAPConfig
+from .config import VAPConfig, expand_run_name
 from .runtime_paths import ASSET_DIR, VAP_LOGS_DIR, ensure_vap_home
-from .validation import validate_config_or_raise
+from .validation import build_legacy_config_warnings, validate_config_or_raise
 
 logger = logging.getLogger("VAP")
 
@@ -20,6 +20,8 @@ def load_config(config_path: str):
         config_json = json.load(f)
     config = VAPConfig.model_validate(config_json)
     warnings = validate_config_or_raise(config)
+    for notice in build_legacy_config_warnings(config_json):
+        logger.warning("Config format [%s]: %s", notice["path"], notice["message"])
     logger.info(
         "Config loaded: model=%s docker_image=%s vllm=%s:%s",
         config.model_cfg.model_name,
@@ -67,9 +69,21 @@ class _RunInterrupted(BaseException):
         self.signum = signum
 
 
+def run_dir_name(date_str: str, config_path: str) -> str:
+    """The start time plus the config's expanded run_name; just the start time
+    when the config cannot be read (load_config then reports why)."""
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return date_str
+    suffix = expand_run_name(payload) if isinstance(payload, dict) else ""
+    return f"{date_str}_{suffix}" if suffix else date_str
+
+
 def run(args, log_dir: str):
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join(log_dir, date_str)
+    log_path = os.path.join(log_dir, run_dir_name(date_str, args.config))
     os.makedirs(log_path, mode=0o700, exist_ok=True)
     os.chmod(log_path, 0o700)
     run_config_copy = os.path.join(log_path, "config.json")

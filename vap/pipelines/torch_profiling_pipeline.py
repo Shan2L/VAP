@@ -317,9 +317,7 @@ class TorchProfilingPipeline(Pipeline):
             profile_dir,
             self.ray_cluster.runner_node_ids,
         )
-        traces_to_fuse = {
-            rank: str(trace.path) for rank, trace in trace_inputs.items()
-        }
+        traces_to_fuse = {rank: str(trace.path) for rank, trace in trace_inputs.items()}
         aligned = False
         raw_fallback = False
 
@@ -329,9 +327,7 @@ class TorchProfilingPipeline(Pipeline):
                 logger.warning(
                     "CLOCK ALIGNMENT SKIPPED: calibration precision gate did not PASS"
                 )
-                logger.warning(
-                    "Skipping timestamp alignment, NCCL validation, and CLC"
-                )
+                logger.warning("Skipping timestamp alignment, NCCL validation, and CLC")
                 logger.warning(
                     "Raw rank traces will still be fused; visualization and "
                     "download remain available"
@@ -430,7 +426,7 @@ class TorchProfilingPipeline(Pipeline):
                 )
             )
         os.makedirs(os.path.join(self.log_path, "vllm-profile"), exist_ok=True)
-        devices = ["/dev/kfd", "/dev/mem"]
+        devices = ["/dev/kfd"]
         devices.extend(container_cfg.devices or ["/dev/dri/"])
         if self.clock_probe.enabled and clock_probe.mode != "software":
             if phc_devices is None:
