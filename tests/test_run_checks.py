@@ -5,6 +5,7 @@ import unittest
 
 from test_security_and_runtime import PROJECT_ROOT  # installs the docker stub
 from vap import validation
+from vap.config import VAPConfig
 
 
 def example_config(**profiler: int) -> dict:
@@ -45,6 +46,24 @@ class RunCheckTests(unittest.TestCase):
         config = example_config(delay_iterations=640)
         config["profiler_cfg"]["enable"] = False
         self.assertEqual(profiler_warnings(config), [])
+
+    def test_configs_written_before_distributed_runs_still_load(self) -> None:
+        config = example_config()
+        config["clock_probe_cfg"]["enabled"] = False
+        config["distributed_cfg"] = {
+            "num_nodes": 2,
+            "ray_port": 6380,
+            "head_node": "localhost",
+            "worker_nodes": ["worker-a"],
+        }
+        result = validation.validate_config_payload(config)
+        self.assertTrue(result["valid"], result.get("errors"))
+        self.assertIn("distributed_cfg", [w["path"] for w in result["warnings"]])
+        distributed = VAPConfig.model_validate(config).distributed_cfg
+        self.assertEqual(
+            (distributed.enable, distributed.ray_port, distributed.worker_nodes),
+            (False, 6380, ["worker-a"]),
+        )
 
     def test_containers_do_not_map_physical_memory(self) -> None:
         for path in (PROJECT_ROOT / "vap").rglob("*.py"):

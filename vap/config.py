@@ -1,7 +1,7 @@
 import os
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TORCH_PROFILER_DIR = "/app/VAP/log/vllm-profile"
 PARALLEL_SIZE_ALIASES = {
@@ -20,11 +20,36 @@ class ModelConfig(StrictBaseModel):
     model_path: str
 
 
+LEGACY_DISTRIBUTED_FIELDS = ("num_nodes", "head_node")
+
+
+def is_legacy_distributed_cfg(data: Any) -> bool:
+    """distributed_cfg as written before distributed runs were implemented."""
+    return (
+        isinstance(data, dict)
+        and "enable" not in data
+        and any(key in data for key in LEGACY_DISTRIBUTED_FIELDS)
+    )
+
+
 class DistributedConfig(StrictBaseModel):
     enable: bool
     ray_port: int = Field(ge=1, le=65535)
     worker_nodes: List[str]
     sshkey_path: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_legacy_format(cls, data: Any) -> Any:
+        if not is_legacy_distributed_cfg(data):
+            return data
+        # Those versions always ran on the local node only.
+        upgraded = {
+            key: value
+            for key, value in data.items()
+            if key not in LEGACY_DISTRIBUTED_FIELDS
+        }
+        return {**upgraded, "enable": False}
 
 
 class ClockProbeConfig(StrictBaseModel):

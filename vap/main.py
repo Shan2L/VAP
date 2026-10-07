@@ -10,7 +10,7 @@ from vap.pipelines.torch_profiling_pipeline import TorchProfilingPipeline
 
 from .config import VAPConfig
 from .runtime_paths import ASSET_DIR, VAP_LOGS_DIR, ensure_vap_home
-from .validation import validate_config_or_raise
+from .validation import build_legacy_config_warnings, validate_config_or_raise
 
 logger = logging.getLogger("VAP")
 
@@ -20,6 +20,8 @@ def load_config(config_path: str):
         config_json = json.load(f)
     config = VAPConfig.model_validate(config_json)
     warnings = validate_config_or_raise(config)
+    for notice in build_legacy_config_warnings(config_json):
+        logger.warning("Config format [%s]: %s", notice["path"], notice["message"])
     logger.info(
         "Config loaded: model=%s docker_image=%s vllm=%s:%s",
         config.model_cfg.model_name,

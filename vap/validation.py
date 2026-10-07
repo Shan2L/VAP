@@ -6,7 +6,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .config import PARALLEL_SIZE_ALIASES, TORCH_PROFILER_DIR, VAPConfig
+from .config import (
+    PARALLEL_SIZE_ALIASES,
+    TORCH_PROFILER_DIR,
+    VAPConfig,
+    is_legacy_distributed_cfg,
+)
 
 SHELL_UNSAFE_PATTERN = re.compile(r"[\n\r;&|`$<>]")
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -18,7 +23,11 @@ def validate_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         config = VAPConfig.model_validate(payload)
         errors = validate_runtime_config(config)
-        warnings = build_security_warnings(config) + build_profiler_warnings(config)
+        warnings = (
+            build_legacy_config_warnings(payload)
+            + build_security_warnings(config)
+            + build_profiler_warnings(config)
+        )
         if errors:
             return {
                 "valid": False,
@@ -431,6 +440,22 @@ def build_security_warnings(config: VAPConfig) -> list[dict[str, str]]:
         }
     )
     return warnings
+
+
+def build_legacy_config_warnings(payload: dict[str, Any]) -> list[dict[str, str]]:
+    if not is_legacy_distributed_cfg(payload.get("distributed_cfg")):
+        return []
+    return [
+        {
+            "path": "distributed_cfg",
+            "message": (
+                "distributed_cfg uses the old num_nodes/head_node format, which only "
+                "ran on the local node. It is read as enable=false with the same "
+                "ray_port and worker_nodes; save the config to store the new format "
+                "and set enable=true to run on the workers."
+            ),
+        }
+    ]
 
 
 def _positive_int(cfg: dict[str, Any], *keys: str, default: int = 1) -> int:
