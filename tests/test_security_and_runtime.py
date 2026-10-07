@@ -1598,7 +1598,9 @@ class RuntimeAndCliTests(unittest.TestCase):
         self.assertIn("cse-ai-6", output)
         self.assertIn("4284.4 ns exceeds 1000.0 ns", output)
 
-    def test_required_clock_probe_fail_session_warns_and_disables_alignment(self) -> None:
+    def test_required_clock_probe_fail_session_warns_and_disables_alignment(
+        self,
+    ) -> None:
         payload = example_payload()
         payload["clock_probe_cfg"]["enabled"] = True
         payload["clock_probe_cfg"]["mode"] = "hardware"
@@ -1637,10 +1639,7 @@ class RuntimeAndCliTests(unittest.TestCase):
             self.assertTrue(clock_probe.has_session)
             self.assertFalse(clock_probe.alignment_ready)
             self.assertTrue(
-                any(
-                    "Clock probe calibration FAILED" in line
-                    for line in logs.output
-                )
+                any("Clock probe calibration FAILED" in line for line in logs.output)
             )
 
     def test_failed_clock_session_skips_alignment_nccl_and_clc(self) -> None:
