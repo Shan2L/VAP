@@ -1392,6 +1392,19 @@ def _scaled(values: dict[str, float], factor: float) -> dict[str, float]:
     return {category: values[category] * factor for category in CATEGORIES}
 
 
+# More GPUs share the compute; every GPU still spends its own communication,
+# pipeline wait and idle time (TP sends the same all-reduces at any TP size).
+SCALES_WITH_GPUS = frozenset((*COMPUTE, "overlap"))
+
+
+def ideal_values(values: dict[str, float], factor: float) -> dict[str, float]:
+    """B's ideal from A's values: compute times gpus_A / gpus_B, the rest as in A."""
+    return {
+        category: values[category] * (factor if category in SCALES_WITH_GPUS else 1.0)
+        for category in CATEGORIES
+    }
+
+
 def _non_layer(data: dict[str, Any]) -> dict[str, float]:
     """Per rank: the step minus the decoder layers of the rank's stage."""
     samples = []
@@ -1507,8 +1520,9 @@ def _stage_gpu_share(data: dict[str, Any]) -> dict[int, float]:
 def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
     """Changes from base (A) to target (B) per generated token, averaged over
     the GPUs. With the same GPU count the change is target - base (mode
-    "same_gpus"); otherwise it is measured against linear scaling, target -
-    (gpus_A / gpus_B) x base (mode "scaling"). A decoder layer counts with its
+    "same_gpus"); otherwise it is target - B's ideal (mode "scaling"): A's
+    compute times gpus_A / gpus_B, and A's communication, pipeline wait and
+    idle, which every GPU still spends however many GPUs share the work. A decoder layer counts with its
     share of the token: its wall time on the GPUs of its pipeline stage
     ("wall_us") times that stage's share of all GPUs, so the layers
     ("layer_sum") and "non_layer" add up to the time per token."""
@@ -1561,7 +1575,8 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
                         "b": sum(wall_b.values()) if wall_b else None,
                     },
                     "change_us": (
-                        sum(side_b.values()) - factor * sum(side_a.values())
+                        sum(side_b.values())
+                        - sum(ideal_values(side_a, factor).values())
                         if side_a and side_b
                         else None
                     ),
@@ -1587,6 +1602,8 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
             ]
             for side, data, spr in (("a", left, spr_a), ("b", right, spr_b))
         }
+        ideal_a = ideal_values(round_a, factor)
+        ideal_total = sum(ideal_a.values())
         phases[phase] = {
             "unit": "µs per generated token, mean over GPUs",
             "steps_per_round": {"a": spr_a, "b": spr_b},
@@ -1599,16 +1616,27 @@ def compare(base: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
             "speedup": speedup,
             "ideal_speedup": 1 / factor,
             "scaling_efficiency": speedup * factor if speedup else None,
+            "linear_us": factor * total_a,
+            "ideal_us": ideal_total,
+            "best_speedup": total_a / ideal_total if ideal_total else None,
             "round_delta_se_us": noise,
             "round": {"a": round_a, "b": round_b},
-            "change": {c: round_b[c] - factor * round_a[c] for c in CATEGORIES},
-            "metrics": {"a": derived_metrics(round_a), "b": derived_metrics(round_b)},
+            "change": {c: round_b[c] - ideal_a[c] for c in CATEGORIES},
+            "metrics": {
+                "a": derived_metrics(round_a),
+                "b": derived_metrics(round_b),
+                "ideal": derived_metrics(ideal_a),
+            },
             "non_layer": {
                 "a": _scaled(_non_layer(left), spr_a),
                 "b": _scaled(_non_layer(right), spr_b),
             },
             "layer_sum": layer_sum,
-            "pillars": {"a": _pillars(round_a), "b": _pillars(round_b)},
+            "pillars": {
+                "a": _pillars(round_a),
+                "b": _pillars(round_b),
+                "ideal": _pillars(ideal_a),
+            },
             "ranks": {"a": _rank_rows(left, spr_a), "b": _rank_rows(right, spr_b)},
             "work": {"a": work_model(base, phase), "b": work_model(target, phase)},
             "timeline": {
@@ -1693,7 +1721,8 @@ def _kernel_changes(
                 "name": key[1],
                 "a_us": us_a,
                 "b_us": us_b,
-                "change_us": us_b - factor * us_a,
+                "change_us": us_b
+                - (factor if key[0] in SCALES_WITH_GPUS else 1.0) * us_a,
                 "a_calls": before["calls_per_step"] * spr_a if before else 0.0,
                 "b_calls": after["calls_per_step"] * spr_b if after else 0.0,
                 "status": (
@@ -1871,12 +1900,14 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
         else:
             text = (
                 f"{phase}: {a['parallel']} ({a['gpus']} GPUs) → {b['parallel']} ({b['gpus']} GPUs) changes the time "
-                f"per generated token from {_ms(total_a)} to {_ms(total_b)}: speedup {data['speedup']:.2f}x vs ideal "
-                f"{data['ideal_speedup']:.2f}x, scaling efficiency {_pct(data['scaling_efficiency'])}"
+                f"per generated token from {_ms(total_a)} to {_ms(total_b)}: speedup {data['speedup']:.2f}x vs linear "
+                f"{data['ideal_speedup']:.2f}x (scaling efficiency {_pct(data['scaling_efficiency'])}); with the compute "
+                f"shared by the GPUs and communication, pipeline wait and idle as in A, B would need "
+                f"{_ms(data['ideal_us'])}, at best {data['best_speedup']:.2f}x"
             )
         noise = data.get("round_delta_se_us")
         if noise:
-            gap = abs(total_b - result["factor"] * total_a)
+            gap = abs(total_b - data["ideal_us"])
             text += (
                 f"; the gap is {gap / noise:.1f}x the step-to-step standard error"
                 + ("" if gap >= 2 * noise else " (within noise)")
@@ -1884,14 +1915,19 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
         add("headline", text + ".")
         factor = result["factor"]
         pillars = data["pillars"]
+        ideal = pillars["ideal"]
         add(
             "bridge",
             f"{phase}: per GPU and generated token"
-            + ("" if same else f" (A scaled by {factor:.3g} for linear scaling)")
+            + (
+                ""
+                if same
+                else f" (B's ideal: A's compute × {factor:.3g}, the rest as in A)"
+            )
             + ", "
             + ", ".join(
-                f"{PILLAR_LABELS[name]} {_ms(factor * pillars['a'][name])} → {_ms(pillars['b'][name])} "
-                f"({(pillars['b'][name] - factor * pillars['a'][name]) / 1000:+.2f} ms)"
+                f"{PILLAR_LABELS[name]} {_ms(ideal[name])} → {_ms(pillars['b'][name])} "
+                f"({(pillars['b'][name] - ideal[name]) / 1000:+.2f} ms)"
                 for name, _ in PILLARS
                 if max(pillars["a"][name], pillars["b"][name]) >= 1
             )
@@ -1911,13 +1947,9 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                     data["non_layer"],
                 ),
             ):
-                group_a, group_b = _group_values(values["a"]), _group_values(
-                    values["b"]
-                )
-                moved = {
-                    group: group_b[group] - result["factor"] * group_a[group]
-                    for group in group_a
-                }
+                group_a = _group_values(ideal_values(values["a"], result["factor"]))
+                group_b = _group_values(values["b"])
+                moved = {group: group_b[group] - group_a[group] for group in group_a}
                 detail = ", ".join(
                     f"{group} {value / 1000:+.2f} ms"
                     for group, value in sorted(
@@ -2012,7 +2044,7 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             )
             and abs(
                 (row["b"] or {}).get("total_us", 0.0)
-                - result["factor"] * (row["a"] or {}).get("total_us", 0.0)
+                - (row["a"] or {}).get("total_us", 0.0)
             )
             >= 50
         ]
@@ -2043,7 +2075,7 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
             add(
                 "kernels",
                 f"{phase}: kernels with the largest change per generated token"
-                + ("" if same else " against linear scaling")
+                + ("" if same else " against B's ideal")
                 + ": "
                 + ", ".join(
                     f"{_kernel_name(row['name'], 60)} {row['change_us']:+.0f} µs"
@@ -2058,7 +2090,7 @@ def compare_findings(result: dict[str, Any]) -> list[dict[str, str]]:
                 "layers",
                 f"{phase}: per decoder layer, its share of the time per generated token changes by {min(changes):+.0f} to "
                 f"{max(changes):+.0f} µs (median {statistics.median(changes):+.0f} µs)"
-                + ("" if same else " against linear scaling")
+                + ("" if same else " against B's ideal")
                 + ".",
             )
     return findings
@@ -2513,8 +2545,16 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
         ],
     )
     for phase, data in result["phases"].items():
-        change_label = "Δ (B − A)" if same else f"Loss (B − {result['factor']:.3g}·A)"
+        change_label = "Δ (B − A)" if same else "B − ideal"
         lines += [f"## Phase `{phase}` (µs per generated token, mean over GPUs)", ""]
+        if not same:
+            lines += [
+                f"B's ideal is A's compute × {result['factor']:.3g} (more GPUs share it) plus A's "
+                "communication, pipeline wait and idle (every GPU still spends them): "
+                f"{data['ideal_us']:.1f} µs per token, at best {data['best_speedup']:.2f}x faster than A; "
+                f"linear scaling would need {data['linear_us']:.1f} µs.",
+                "",
+            ]
         lines += _md_table(
             ["", "A", "B", change_label],
             [
@@ -2534,7 +2574,7 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
                     "Time per token µs",
                     data["round_us"]["a"],
                     data["round_us"]["b"],
-                    data["round_us"]["b"] - result["factor"] * data["round_us"]["a"],
+                    data["round_us"]["b"] - data["ideal_us"],
                 ),
                 *(
                     (
@@ -2585,17 +2625,16 @@ def comparison_appendix(result: dict[str, Any]) -> list[str]:
                 ("Idle share %", _share(ma["idle_share"]), _share(mb["idle_share"])),
             ],
         )
-        factor = result["factor"]
         pillars = data["pillars"]
         lines += ["### Time per token by kind (µs per GPU, mean over GPUs)", ""]
         lines += _md_table(
-            ["Kind", "A" if same else f"{factor:.3g}·A", "B", change_label],
+            ["Kind", "A" if same else "Ideal B", "B", change_label],
             [
                 [
                     PILLAR_LABELS[name].capitalize(),
-                    factor * pillars["a"][name],
+                    pillars["ideal"][name],
                     pillars["b"][name],
-                    pillars["b"][name] - factor * pillars["a"][name],
+                    pillars["b"][name] - pillars["ideal"][name],
                 ]
                 for name, _ in PILLARS
             ],
@@ -3130,6 +3169,9 @@ def compare_summary(
                 "speedup",
                 "ideal_speedup",
                 "scaling_efficiency",
+                "linear_us",
+                "ideal_us",
+                "best_speedup",
                 "round_delta_se_us",
             )
         }
@@ -3139,12 +3181,16 @@ def compare_summary(
             side: _rounded(_group_values(data["round"][side])) for side in ("a", "b")
         } | {"change": _rounded(_group_values(data["change"]))}
         entry["metrics"] = _rounded(data["metrics"], 4)
-        entry["non_layer"] = _rounded(
-            {side: derived_metrics(data["non_layer"][side]) for side in ("a", "b")}
-        )
-        entry["layer_sum"] = _rounded(
-            {side: derived_metrics(data["layer_sum"][side]) for side in ("a", "b")}
-        )
+        for key in ("non_layer", "layer_sum"):
+            values = data[key]
+            entry[key] = _rounded(
+                {side: derived_metrics(values[side]) for side in ("a", "b")}
+                | {
+                    "ideal": derived_metrics(
+                        ideal_values(values["a"], result["factor"])
+                    )
+                }
+            )
         entry["parts"] = {
             "layers": _rounded(data["layer_sum"]),
             "outside": _rounded(data["non_layer"]),
@@ -3194,7 +3240,8 @@ def compare_summary(
         "change_definition": (
             "B - A"
             if result["mode"] == "same_gpus"
-            else f"B - {result['factor']:.4g} x A (linear scaling)"
+            else f"B - ideal (A's compute x {result['factor']:.4g}; communication, "
+            "pipeline wait and idle as in A)"
         ),
         "factor": result["factor"],
         "a": result["a"],

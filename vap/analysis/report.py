@@ -99,7 +99,12 @@ def system_prompt(language: str) -> str:
         "(the time in which every running sequence decodes one token; comparable to "
         "TPOT; pipeline-parallel decode needs one engine step per micro-batch). With "
         "the same GPU count, change = B - A; with different GPU counts, change = "
-        "B - (gpus_A / gpus_B) x A, i.e. the loss against linear scaling. 'pillars' "
+        "B - B's ideal: A's compute x gpus_A / gpus_B (more GPUs share it) plus A's "
+        "communication, pipeline wait and idle, which every GPU still spends (TP sends "
+        "the same all-reduces of the same size per token at any TP size). 'ideal_us' is "
+        "that ideal time per token and 'best_speedup' the speedup it allows; "
+        "'linear_us' and 'ideal_speedup' describe perfect linear scaling, which A's "
+        "communication and idle make unreachable. 'pillars' "
         "splits a GPU's time per token into compute, communication (exposed, "
         "including waiting for peer GPUs), pipeline wait (waiting for another stage) "
         "and idle; they add up to the time per token. 'work' gives what one GPU "
@@ -283,6 +288,9 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
     factor = 1.0 if same else data["factor"]
     names = PILLAR_NAMES["zh" if zh else "en"]
     ta_us, tb_us = p["round_us"]["a"], p["round_us"]["b"]
+    pillars = p["pillars"]
+    ideal = pillars["ideal"]
+    ideal_us = p["ideal_us"]
     share = f"{a['gpus']}/{b['gpus']}"
     if same:
         what = (
@@ -296,16 +304,21 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
     else:
         what = (
             "最上面一组是每个 token 的总时间，下面每组是一类时间，各类加起来正好等于总时间。"
-            f"每组两条：上面淡色的是 A 的实测，下面实色的是 B 的实测；竖线是线性扩展目标，即 A 的值 × {share}，"
-            "也就是这类时间随 GPU 数完美缩放时 B 应达到的值。"
-            "B 超过竖线的红色斜线部分就是这类时间造成的扩展损失，各类的红色部分加起来等于总时间超出目标的部分；"
-            "低于竖线的绿色虚框表示这类时间比线性扩展还好。"
+            "每组两条：上面淡色的是 A 的实测，下面实色的是 B 的实测；实线是 B 的理想值。"
+            f"计算可以分给更多 GPU，理想值是 A 的计算 × {share}；"
+            "通信、流水线等待和空闲是每张 GPU 都要花的时间，不会因为 GPU 变多而减少"
+            "（TP 下每个 token 的 all-reduce 次数和每次的数据量都与 GPU 数无关），理想值就是 A 的值。"
+            f"总时间一组另有一条虚线，是完美线性扩展（A × {share}），虚线到实线之间是 A 中不能分摊的时间，再多的 GPU 也省不掉。"
+            "B 超过实线的红色斜线是真正的扩展损失，各类的红色部分加起来等于总时间的红色部分；低于实线的绿色虚框表示比理想值还好。"
             if zh
             else "The top group is the time per token; each group below is one kind of time, and the kinds add up to the total. "
-            f"Each group has two bars, A's measurement on top (faded) and B's below (solid); the line is the linear-scaling target, A's value × {share}, "
-            "what B would need if that kind of time scaled perfectly with the GPU count. The hatched red part of B beyond the line "
-            "is the scaling loss that kind of time causes, and the red parts add up to the total's; a dashed green box means "
-            "that kind does better than linear scaling."
+            "Each group has two bars, A's measurement on top (faded) and B's below (solid); the solid line is B's ideal. "
+            f"More GPUs share the compute, so its ideal is A's compute × {share}; communication, pipeline wait and idle are spent "
+            "by every GPU and do not shrink with more GPUs (TP sends the same all-reduces of the same size per token at any TP "
+            "size), so their ideal is A's value. The total also has a dashed line at perfect linear scaling "
+            f"(A × {share}); between the dashed and the solid line is the time of A that cannot be shared, which no number "
+            "of GPUs removes. The hatched red part of B beyond the solid line is the real scaling loss, and the red parts of "
+            "the kinds add up to the total's; a dashed green box means better than the ideal."
         )
     what += (
         "数值是每张 GPU 生成一个 token 的平均时间（与 TPOT 同口径）："
@@ -318,7 +331,9 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
         "idle is no kernel at all, mostly host launch gaps."
     )
     reading: list[str] = []
-    delta = tb_us - factor * ta_us
+    delta = tb_us - ideal_us
+    shown = [name for name in names if max(pillars["a"][name], pillars["b"][name]) >= 1]
+    moves = {name: pillars["b"][name] - ideal[name] for name in names}
     if same:
         reading.append(
             f"B（{b['parallel']}）每生成一个 token 需要 {_ms(tb_us)}，A（{a['parallel']}）为 {_ms(ta_us)}，"
@@ -327,45 +342,54 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
             else f"B ({b['parallel']}) needs {_ms(tb_us)} per generated token vs {_ms(ta_us)} for A ({a['parallel']}): "
             f"{abs(delta) / ta_us:.1%} {'slower' if delta > 0 else 'faster'} ({_signed_ms(delta)})."
         )
+        reading.append(
+            ("按类型拆分：" if zh else "By kind: ")
+            + ("，" if zh else "; ").join(
+                (
+                    f"{names[name]} {_ms(pillars['a'][name])} → {_ms(pillars['b'][name])}（{_signed_ms(moves[name])}）"
+                    if zh
+                    else f"{names[name]} {_ms(pillars['a'][name])} → {_ms(pillars['b'][name])} ({_signed_ms(moves[name])})"
+                )
+                for name in shown
+            )
+            + ("。" if zh else ".")
+        )
     else:
         gap = tb_us - ta_us
         reading.append(
             f"A（{a['parallel']}，{a['gpus']} 卡）每个 token {_ms(ta_us)}，B（{b['parallel']}，{b['gpus']} 卡）{_ms(tb_us)}，"
-            f"比 A {'还慢' if gap > 0 else '快'} {_ms(abs(gap))}。完美线性扩展时 B 应为 {_ms(factor * ta_us)}（A × {share}），"
-            f"实测{'多出' if delta > 0 else '少了'} {_ms(abs(delta))}：加速比 {p['speedup']:.2f}×（理想 {p['ideal_speedup']:.2f}×），"
-            f"扩展效率 {_pct(p['scaling_efficiency'])}。"
+            f"比 A {'还慢' if gap > 0 else '快'} {_ms(abs(gap))}：加速比 {p['speedup']:.2f}×，"
+            f"完美线性扩展应为 {p['ideal_speedup']:.2f}×（{_ms(p['linear_us'])}），扩展效率 {_pct(p['scaling_efficiency'])}。"
             if zh
             else f"A ({a['parallel']}, {a['gpus']} GPUs) needs {_ms(ta_us)} per token and B ({b['parallel']}, {b['gpus']} GPUs) "
-            f"{_ms(tb_us)}, {_ms(abs(gap))} {'slower' if gap > 0 else 'faster'} than A. With linear scaling B would need "
-            f"{_ms(factor * ta_us)} (A × {share}); it takes {_ms(abs(delta))} {'more' if delta > 0 else 'less'}: "
-            f"speedup {p['speedup']:.2f}x vs ideal {p['ideal_speedup']:.2f}x, scaling efficiency {_pct(p['scaling_efficiency'])}."
+            f"{_ms(tb_us)}, {_ms(abs(gap))} {'slower' if gap > 0 else 'faster'} than A: speedup {p['speedup']:.2f}x, "
+            f"perfect linear scaling would be {p['ideal_speedup']:.2f}x ({_ms(p['linear_us'])}), "
+            f"scaling efficiency {_pct(p['scaling_efficiency'])}."
         )
-    pillars = p["pillars"]
-    moves = {name: pillars["b"][name] - factor * pillars["a"][name] for name in names}
-    shown = [name for name in names if max(pillars["a"][name], pillars["b"][name]) >= 1]
-    if same:
-        items = [
-            (
-                f"{names[name]} {_ms(pillars['a'][name])} → {_ms(pillars['b'][name])}（{_signed_ms(moves[name])}）"
-                if zh
-                else f"{names[name]} {_ms(pillars['a'][name])} → {_ms(pillars['b'][name])} ({_signed_ms(moves[name])})"
-            )
-            for name in shown
+        fixed = [
+            name for name in names if name != "compute" and pillars["a"][name] >= 1
         ]
-        reading.append(
-            ("按类型拆分：" if zh else "By kind: ")
-            + ("，" if zh else "; ").join(items)
-            + ("。" if zh else ".")
-        )
-    else:
+        if fixed:
+            listed_fixed = ("、" if zh else " and ").join(
+                f"{names[name]} {_ms(pillars['a'][name])}" for name in fixed
+            )
+            reading.append(
+                f"完美线性扩展做不到：A 的 {_ms(ta_us)} 中只有计算 {_ms(pillars['a']['compute'])} 能分给更多 GPU，"
+                f"{listed_fixed} 每张 GPU 都要花。即使计算完美缩到 ×{factor:.2f}、其余不变，B 也要 {_ms(ideal_us)}，"
+                f"最多快 {p['best_speedup']:.2f}×。"
+                if zh
+                else f"Perfect linear scaling is out of reach: of A's {_ms(ta_us)} only the compute ({_ms(pillars['a']['compute'])}) "
+                f"can be shared by more GPUs, every GPU still spends {listed_fixed}. Even with the compute cut to "
+                f"×{factor:.2f} and the rest unchanged, B would need {_ms(ideal_us)}, at best {p['best_speedup']:.2f}x faster."
+            )
         items = []
         for name in shown:
-            target, after = factor * pillars["a"][name], pillars["b"][name]
+            target, after = ideal[name], pillars["b"][name]
             over = after >= target
             items.append(
-                f"{names[name]} {_ms(pillars['a'][name])} → {_ms(after)}（目标 {_ms(target)}，{'多' if over else '少'} {_ms(abs(after - target))}）"
+                f"{names[name]} {_ms(pillars['a'][name])} → {_ms(after)}（理想 {_ms(target)}，{'多' if over else '少'} {_ms(abs(after - target))}）"
                 if zh
-                else f"{names[name]} {_ms(pillars['a'][name])} → {_ms(after)} (target {_ms(target)}, "
+                else f"{names[name]} {_ms(pillars['a'][name])} → {_ms(after)} (ideal {_ms(target)}, "
                 f"{_ms(abs(after - target))} {'over' if over else 'under'})"
             )
         reading.append(
@@ -381,29 +405,23 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
         if before < 1:
             return "A 没有这一项" if zh else "none in A"
         ratio = after / before
+        if name == "compute":
+            if ratio > factor:
+                return (
+                    f"只降到 ×{ratio:.2f}，理想 ×{factor:.2f}"
+                    if zh
+                    else f"shrinks only to ×{ratio:.2f}, ideal ×{factor:.2f}"
+                )
+            return (
+                f"降到 ×{ratio:.2f}，好于理想 ×{factor:.2f}"
+                if zh
+                else f"shrinks to ×{ratio:.2f}, better than the ideal ×{factor:.2f}"
+            )
         if ratio >= 1.05:
-            return (
-                f"不降反升，{_ms(before)} → {_ms(after)}"
-                if zh
-                else f"grows instead of shrinking, {_ms(before)} → {_ms(after)}"
-            )
+            return f"是 A 的 ×{ratio:.2f}" if zh else f"×{ratio:.2f} of A"
         if ratio > 0.95:
-            return (
-                f"基本不变，{_ms(before)} → {_ms(after)}"
-                if zh
-                else f"barely changes, {_ms(before)} → {_ms(after)}"
-            )
-        if ratio > factor:
-            return (
-                f"只降到 ×{ratio:.2f}，理想 ×{factor:.2f}"
-                if zh
-                else f"shrinks only to ×{ratio:.2f}, ideal ×{factor:.2f}"
-            )
-        return (
-            f"降到 ×{ratio:.2f}，好于理想 ×{factor:.2f}"
-            if zh
-            else f"shrinks to ×{ratio:.2f}, better than the ideal ×{factor:.2f}"
-        )
+            return "与 A 基本相同" if zh else "about the same as A"
+        return f"降到 A 的 ×{ratio:.2f}" if zh else f"down to ×{ratio:.2f} of A"
 
     def listed(items: list[str]) -> str:
         ordered = sorted(items, key=lambda name: -abs(moves[name]))
@@ -439,10 +457,10 @@ def _bridge_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str
                     else "."
                 )
         elif zh:
-            text = f"{'超出' if delta > 0 else '低于'}线性目标的 {_ms(abs(delta))} 来自：{listed(main)}"
+            text = f"B 比理想值{'多出' if delta > 0 else '少了'}的 {_ms(abs(delta))} 来自：{listed(main)}"
             text += f"。另有{listed(offset)}，抵消了一部分。" if offset else "。"
         else:
-            text = f"The {_ms(abs(delta))} {'over' if delta > 0 else 'under'} the linear target comes from: {listed(main)}"
+            text = f"The {_ms(abs(delta))} B takes {'over' if delta > 0 else 'under'} its ideal comes from: {listed(main)}"
             text += (
                 f". {listed(offset)[0].upper()}{listed(offset)[1:]} offsets part of it."
                 if offset
@@ -643,30 +661,28 @@ def _communication_notes(
                     else f"{'half' if abs(bytes_b / bytes_a - 0.5) < 0.05 else ('smaller' if bytes_b < bytes_a else 'larger')} messages"
                 )
             if abs(tb_call / ta_call - 1) > 0.1:
-                same = data["mode"] == "same_gpus"
-                factor = 1.0 if same else data["factor"]
                 totals = layer["a"]["total_us"], layer["b"]["total_us"]
                 counts = layer["a"]["count"], layer["b"]["count"]
                 if zh:
                     text = f"单次 all-reduce 从 {ta_call:.1f} 变为 {tb_call:.1f} µs（{_x(tb_call / ta_call)}）"
                     text += f"：{'、'.join(causes)}" if causes else ""
                     text += f"；每个 token 调用 {counts[0]:.0f} → {counts[1]:.0f} 次，合计 {_ms(totals[0])} → {_ms(totals[1])}"
-                    text += (
-                        f"（{_signed_ms(totals[1] - totals[0])}）。"
-                        if same
-                        else f"（线性扩展目标 {_ms(factor * totals[0])}，{'超出' if totals[1] >= factor * totals[0] else '低于'} {_ms(abs(totals[1] - factor * totals[0]))}）。"
-                    )
+                    text += f"（{_signed_ms(totals[1] - totals[0])}）。"
                 else:
                     text = f"One all-reduce takes {ta_call:.1f} → {tb_call:.1f} µs ({_x(tb_call / ta_call)})"
                     text += f": {', '.join(causes)}" if causes else ""
                     text += f"; per token {counts[0]:.0f} → {counts[1]:.0f} calls, {_ms(totals[0])} → {_ms(totals[1])}"
-                    text += (
-                        f" ({_signed_ms(totals[1] - totals[0])})."
-                        if same
-                        else f" (linear-scaling target {_ms(factor * totals[0])}, {_ms(abs(totals[1] - factor * totals[0]))} {'over' if totals[1] >= factor * totals[0] else 'under'} it)."
-                    )
+                    text += f" ({_signed_ms(totals[1] - totals[0])})."
                 reading.append(text)
-    factor = 1.0 if data["mode"] == "same_gpus" else data["factor"]
+    if data["mode"] != "same_gpus" and layer["a"] and layer["b"]:
+        reading.append(
+            "GPU 变多后，每张卡每个 token 仍要做同样次数、同样数据量的 all-reduce（数据量取决于每步序列数和 hidden size，"
+            "与 TP 大小无关），通信分摊不到更多 GPU 上，所以它的理想值就是 A 的值；参与的 GPU 越多，单次 all-reduce 通常越慢。"
+            if zh
+            else "With more GPUs every GPU still runs as many all-reduces of the same size per token (the size depends on "
+            "the sequences per step and the hidden size, not on the TP size): communication is not shared by the GPUs, so "
+            "its ideal is A's value, and more GPUs per all-reduce usually make each call slower."
+        )
     others = [
         row
         for row in rows
@@ -674,7 +690,7 @@ def _communication_notes(
         and not (row["op"] == "all_reduce" and row["role"] in LAYER_ROLES)
         and abs(
             (row.get("b") or {}).get("total_us", 0.0)
-            - factor * (row.get("a") or {}).get("total_us", 0.0)
+            - (row.get("a") or {}).get("total_us", 0.0)
         )
         >= 50
     ]
@@ -860,8 +876,9 @@ def _layer_notes(data: dict[str, Any], p: dict[str, Any], zh: bool) -> dict[str,
                 parts["outside"],
             ),
         ):
-            group_a, group_b = ta._pillars(values["a"]), ta._pillars(values["b"])
-            moved = {name: group_b[name] - factor * group_a[name] for name in group_a}
+            group_a = ta._pillars(ta.ideal_values(values["a"], factor))
+            group_b = ta._pillars(values["b"])
+            moved = {name: group_b[name] - group_a[name] for name in group_a}
             top = [
                 (name, value)
                 for name, value in sorted(
@@ -1027,11 +1044,20 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
 
     pillar_names = PILLAR_NAMES[language]
     pillars = p["pillars"]
-    metrics = [("每 token 时间" if zh else "Time per token", ta_us, tb_us, False)] + [
+    metrics = [
+        (
+            "每 token 时间" if zh else "Time per token",
+            ta_us,
+            tb_us,
+            p["ideal_us"],
+            False,
+        )
+    ] + [
         (
             pillar_names[name] if zh else pillar_names[name].capitalize(),
             pillars["a"][name],
             pillars["b"][name],
+            pillars["ideal"][name],
             True,
         )
         for name in pillar_names
@@ -1050,15 +1076,19 @@ def rule_narrative(data: dict[str, Any], language: str) -> str:
         head.append("变化" if zh else "Change")
     else:
         head += [
-            f"线性目标（{factor:.3g}×A）" if zh else f"Linear target ({factor:.3g}×A)",
-            "B − 目标" if zh else "B − target",
+            (
+                f"理想值（计算 ×{factor:.3g}，其余同 A）"
+                if zh
+                else f"Ideal B (compute ×{factor:.3g}, rest as in A)"
+            ),
+            "B − 理想值" if zh else "B − ideal",
         ]
     table = ["| " + " | ".join(head) + " |", "|---" + "|---:" * (len(head) - 1) + "|"]
-    for label, before, after, part in metrics:
+    for label, before, after, target, part in metrics:
         cells = [label, timed(before, ta_us, part), timed(after, tb_us, part)]
         if not same:
-            cells.append(_ms(factor * before))
-        cells.append(_signed_ms(after - factor * before))
+            cells.append(_ms(target))
+        cells.append(_signed_ms(after - target))
         table.append("| " + " | ".join(cells) + " |")
 
     recs: list[str] = []

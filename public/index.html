@@ -1229,10 +1229,16 @@
       pointer-events: none;
     }
 
-    .swatch.kind-legend-ref {
+    .swatch.kind-legend-ref,
+    .swatch.kind-legend-linear {
       width: 0;
       border-left: 2px solid var(--text);
       border-radius: 0;
+    }
+
+    .kind-ref.linear,
+    .swatch.kind-legend-linear {
+      border-left: 2px dashed var(--text-2);
     }
 
     .kind-value {
@@ -4442,12 +4448,13 @@
       return (value > 0) === higherIsWorse ? "delta-worse" : "delta-better";
     }
 
-    function comparisonFactor(comparison) {
-      return comparison.mode === "same_gpus" ? 1 : comparison.factor;
+    function changeTone(change, total) {
+      if (Math.abs(change) < Math.max(5, 0.01 * (total || 0))) return "delta-flat";
+      return change > 0 ? "delta-worse" : "delta-better";
     }
 
-    function pillarTotal(values, factor = 1) {
-      return PILLAR_KEYS.reduce((total, [key]) => total + factor * (values?.[key] || 0), 0);
+    function pillarTotal(values) {
+      return PILLAR_KEYS.reduce((total, [key]) => total + (values?.[key] || 0), 0);
     }
 
     function fmtRatio(before, after) {
@@ -4469,18 +4476,17 @@
 
     function renderKpis(phase, comparison) {
       const same = comparison.mode === "same_gpus";
-      const factor = comparisonFactor(comparison);
       const roundA = phase.round_us.a;
       const roundB = phase.round_us.b;
-      const versus = (a, b, digits = 2) => {
-        const change = b - factor * a;
+      const versus = (a, b, ideal) => {
+        const change = b - ideal;
         const text = same
-          ? `${fmtSigned(change / 1000, digits, " ms")}${a ? ` (${fmtSigned(100 * change / a, 1, "%")})` : ""}`
-          : `${fmtSigned(change / 1000, digits, " ms")} vs target ${fmtMs(factor * a)}`;
-        return [text, deltaClass(change, true)];
+          ? `${fmtSigned(change / 1000, 2, " ms")}${a ? ` (${fmtSigned(100 * change / a, 1, "%")})` : ""}`
+          : `${fmtSigned(change / 1000, 2, " ms")} vs ideal ${fmtMs(ideal)}`;
+        return [text, changeTone(change, roundA)];
       };
       const kpis = [];
-      const [roundText, roundClass] = versus(roundA, roundB);
+      const [roundText, roundClass] = versus(roundA, roundB, phase.ideal_us ?? roundA);
       kpis.push({
         label: "Time per token",
         a: fmtMs(roundA),
@@ -4489,15 +4495,15 @@
         cls: roundClass,
         share: same
           ? "mean over the GPUs, comparable to TPOT"
-          : `B − A ${fmtSigned((roundB - roundA) / 1000, 2, " ms")} (${fmtSigned(100 * (roundB - roundA) / roundA, 1, "%")})`,
+          : `B − A ${fmtSigned((roundB - roundA) / 1000, 2, " ms")} · linear scaling ${fmtMs(phase.linear_us)}`,
       });
       if (!same) {
         kpis.push({
           label: "Speedup",
           a: "",
           b: `${phase.speedup?.toFixed(2)}×`,
-          delta: `ideal ${phase.ideal_speedup?.toFixed(2)}×`,
-          cls: deltaClass((phase.scaling_efficiency ?? 1) - 1, false),
+          delta: `at best ${phase.best_speedup?.toFixed(2)}× · linear ${phase.ideal_speedup?.toFixed(2)}×`,
+          cls: deltaClass((phase.speedup ?? 0) - (phase.best_speedup ?? 0), false),
           share: `scaling efficiency ${fmtPct(phase.scaling_efficiency)}`,
         });
       }
@@ -4505,14 +4511,21 @@
         const a = phase.pillars.a[key] || 0;
         const b = phase.pillars.b[key] || 0;
         if (key === "pipeline" && a < 1 && b < 1) continue;
-        const [text, cls] = versus(a, b);
+        const [text, cls] = versus(a, b, phase.pillars.ideal?.[key] ?? a);
         kpis.push({ label: `${name} per GPU`, a: fmtMs(a), b: fmtMs(b), delta: text, cls, share: `${fmtPct(a / roundA)} → ${fmtPct(b / roundB)} of the token` });
       }
       const tpotA = comparison.a.bench?.tpot_ms_mean;
       const tpotB = comparison.b.bench?.tpot_ms_mean;
       if (tpotA && tpotB) {
-        const [text, cls] = versus(1000 * tpotA, 1000 * tpotB);
-        kpis.push({ label: "Benchmark mean TPOT", a: `${tpotA.toFixed(2)} ms`, b: `${tpotB.toFixed(2)} ms`, delta: text, cls, share: "measured by the benchmark client" });
+        const change = tpotB - tpotA;
+        kpis.push({
+          label: "Benchmark mean TPOT",
+          a: `${tpotA.toFixed(2)} ms`,
+          b: `${tpotB.toFixed(2)} ms`,
+          delta: `${fmtSigned(change, 2, " ms")} (${fmtSigned(100 * change / tpotA, 1, "%")})`,
+          cls: deltaClass(change, true),
+          share: "measured by the benchmark client",
+        });
       }
       document.getElementById("analysis-kpis").replaceChildren(...kpis.map((kpi) => {
         const card = document.createElement("div");
@@ -4543,51 +4556,69 @@
 
     function renderBridge(phase, comparison) {
       const same = comparison.mode === "same_gpus";
-      const factor = comparisonFactor(comparison);
       const pillars = phase.pillars;
       const share = `${comparison.a.gpus}/${comparison.b.gpus}`;
-      const reference = same ? "A" : "the target";
+      const reference = same ? "A" : "the ideal";
       const groups = [
-        { name: "Time per token", cls: "kind-total", a: pillarTotal(pillars.a), b: pillarTotal(pillars.b) },
+        {
+          name: "Time per token",
+          cls: "kind-total",
+          a: pillarTotal(pillars.a),
+          b: pillarTotal(pillars.b),
+          target: same ? pillarTotal(pillars.a) : phase.ideal_us,
+          linear: same ? null : phase.linear_us,
+        },
         ...PILLAR_KEYS
-          .map(([key, name, cls]) => ({ name: `${name} per GPU`, cls, a: pillars.a[key] || 0, b: pillars.b[key] || 0 }))
+          .map(([key, name, cls]) => ({
+            name: `${name} per GPU`,
+            cls,
+            a: pillars.a[key] || 0,
+            b: pillars.b[key] || 0,
+            target: same ? pillars.a[key] || 0 : pillars.ideal?.[key] ?? 0,
+          }))
           .filter((group) => group.a >= 1 || group.b >= 1),
       ];
-      const scale = 1.04 * Math.max(1, ...groups.flatMap((group) => [group.a, group.b]));
+      const scale = 1.04 * Math.max(1, ...groups.flatMap((group) => [group.a, group.b, group.target]));
       const position = (value) => `${(100 * value / scale).toFixed(3)}%`;
       const rows = groups.map((group, index) => {
-        const target = factor * group.a;
-        const change = group.b - target;
-        const tone = Math.abs(change) < 5 ? "delta-flat" : change > 0 ? "delta-worse" : "delta-better";
-        const ratio = group.a >= 1 ? `B ÷ A ×${(group.b / group.a).toFixed(2)}${same ? "" : ` · linear ×${factor.toFixed(2)}`}` : "";
-        const changeText = same ? fmtSigned(change / 1000, 2, " ms") : `${fmtSigned(change / 1000, 2, " ms")} vs target ${fmtMs(target)}`;
+        const change = group.b - group.target;
+        const tone = changeTone(change, groups[0].a);
+        const ratio = group.a >= 1
+          ? `B ÷ A ×${(group.b / group.a).toFixed(2)}`
+            + (same ? "" : ` · ideal ×${(group.target / group.a).toFixed(2)}`)
+            + (group.linear ? ` · linear ×${(group.linear / group.a).toFixed(2)}` : "")
+          : "";
+        const changeText = same ? fmtSigned(change / 1000, 2, " ms") : `${fmtSigned(change / 1000, 2, " ms")} vs ideal ${fmtMs(group.target)}`;
         const gap = change > 0
-          ? `<span class="kind-extra" style="left:${position(target)};width:${position(change)}" title="${escapeAttr(`B above ${reference}: ${fmtMs(change)}`)}"></span>`
+          ? `<span class="kind-extra" style="left:${position(group.target)};width:${position(change)}" title="${escapeAttr(`B above ${reference}: ${fmtMs(change)}`)}"></span>`
           : change < 0
             ? `<span class="kind-saved" style="left:${position(group.b)};width:${position(-change)}" title="${escapeAttr(`B below ${reference}: ${fmtMs(-change)}`)}"></span>`
             : "";
-        const marker = `<i class="kind-ref" style="left:${position(target)}" title="${escapeAttr(same ? `A: ${fmtMs(group.a)}` : `Linear target, A × ${share}: ${fmtMs(target)}`)}"></i>`;
+        const marker = `<i class="kind-ref" style="left:${position(group.target)}" title="${escapeAttr(same ? `A: ${fmtMs(group.a)}` : `Ideal for B: ${fmtMs(group.target)}`)}"></i>`
+          + (group.linear ? `<i class="kind-ref linear" style="left:${position(group.linear)}" title="${escapeAttr(`Linear scaling, A × ${share}: ${fmtMs(group.linear)}`)}"></i>` : "");
         const row = (letter, head, track, value, strong) => `<div class="kind-row"><span class="kind-side">${escapeHtml(`${letter} · ${head.parallel}`)}</span>`
           + `<span class="kind-track">${track}</span><span class="kind-value${strong ? " strong" : ""}">${fmtMs(value)}</span></div>`;
         return `<div class="kind-group${index === 0 ? " total" : ""}">`
           + `<div class="kind-head"><span class="kind-name">${escapeHtml(group.name)}${ratio ? `<small>${escapeHtml(ratio)}</small>` : ""}</span>`
           + `<span class="kind-change ${tone}">${escapeHtml(changeText)}</span></div>`
           + row("A", comparison.a, `<span class="kind-bar side-a ${group.cls}" style="width:${position(group.a)}"></span>`, group.a, false)
-          + row("B", comparison.b, `<span class="kind-bar ${group.cls}" style="width:${position(Math.min(group.b, target))}"></span>${gap}${marker}`, group.b, true)
+          + row("B", comparison.b, `<span class="kind-bar ${group.cls}" style="width:${position(Math.min(group.b, group.target))}"></span>${gap}${marker}`, group.b, true)
           + "</div>";
       });
       rows.push(`<div class="kind-row"><span></span><span class="kind-axis">${axisTicks(scale, position)}</span><span></span></div>`);
       document.getElementById("analysis-bridge").innerHTML = rows.join("");
-      const slower = groups[0].b > factor * groups[0].a;
+      const slower = groups[0].b > (same ? groups[0].a : groups[0].linear);
       document.getElementById("analysis-bridge-title").textContent = same
         ? `Why B is ${slower ? "slower" : "faster"}`
         : `Why B ${slower ? "falls short of" : "beats"} linear scaling`;
       document.getElementById("analysis-bridge-sub").textContent = same
         ? "Milliseconds per generated token, mean over the GPUs: the total and each kind of time, B against A"
-        : `Milliseconds per generated token, mean over the GPUs: the total and each kind of time, B against the linear-scaling target (A × ${share})`;
+        : `Milliseconds per generated token, mean over the GPUs, against B's ideal: compute × ${share} (more GPUs share it), `
+          + "communication, pipeline wait and idle as in A (every GPU still spends them)";
       document.getElementById("analysis-bridge-legend").innerHTML = '<span><i class="swatch kind-legend-a"></i>A (faded)</span>'
         + '<span><i class="swatch kind-legend-b"></i>B (solid)</span>'
-        + `<span><i class="swatch kind-legend-ref"></i>${same ? "A's value" : `Linear target = A × ${share}`}</span>`
+        + `<span><i class="swatch kind-legend-ref"></i>${same ? "A's value" : "Ideal for B"}</span>`
+        + (same ? "" : `<span><i class="swatch kind-legend-linear"></i>Linear scaling, A × ${share}</span>`)
         + `<span><i class="swatch kind-legend-extra"></i>B above ${escapeHtml(reference)}</span>`
         + `<span><i class="swatch kind-legend-saved"></i>B below ${escapeHtml(reference)}</span>`;
     }
@@ -4661,7 +4692,6 @@
 
     function renderCommPattern(phase, comparison) {
       const same = comparison.mode === "same_gpus";
-      const factor = comparisonFactor(comparison);
       const rows = (phase.collectives || []).map((row) => {
         const pp = row.dim === "pp";
         const values = (side) => {
@@ -4694,7 +4724,7 @@
           b: { total: pipeline("b") },
         });
       }
-      const change = (row) => (row.b?.total || 0) - factor * (row.a?.total || 0);
+      const change = (row) => (row.b?.total || 0) - (row.a?.total || 0);
       const peak = Math.max(0, ...rows.map((row) => Math.abs(change(row))));
       const num = (value) => (value == null ? "-" : value.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
       const delta = (value) => fmtSigned(value / 1000, 2, " ms");
@@ -4709,9 +4739,9 @@
         ["Where", 1],
         [`A · ${comparison.a.parallel}`, 4, "group group-start"],
         [`B · ${comparison.b.parallel}`, 4, "group group-start"],
-        [same ? "Change" : "vs target", 1, "group group-start"],
+        ["Change", 1, "group group-start"],
       ];
-      const sub = ["", "", ...["a", "b"].flatMap(() => ["Calls", "Transfer µs", "Wait µs", "Per token"]), same ? "B − A" : `B − ${factor}×A`];
+      const sub = ["", "", ...["a", "b"].flatMap(() => ["Calls", "Transfer µs", "Wait µs", "Per token"]), "B − A"];
       const subHtml = sub.map((label, index) => `<th class="${[2, 6, 10].includes(index) ? "group-start" : ""}">${escapeHtml(label)}</th>`).join("");
       const body = rows.map((row) => `<tr>${[
         cell(escapeHtml(row.name), "text", "", row.tip),
@@ -4726,12 +4756,13 @@
         cell(""),
         cell("", "group-start"), cell(""), cell(""), cell(fmtMs(total("a"))),
         cell("", "group-start"), cell(""), cell(""), cell(fmtMs(total("b"))),
-        cell(delta(total("b") - factor * total("a")), "group-start"),
+        cell(delta(total("b") - total("a")), "group-start"),
       ].join("")}</tr>`;
       document.getElementById("analysis-comm-table").innerHTML = `<thead><tr>${tableHead(groups)}</tr><tr>${subHtml}</tr></thead>`
         + `<tbody>${body ? body + footer : '<tr><td colspan="11" class="text">No communication kernels.</td></tr>'}</tbody>`;
       document.getElementById("analysis-comm-sub").textContent = "Per GPU and generated token: one call = transfer (the fastest GPU's kernel time) + wait (an early GPU waiting for the slowest one), "
-        + "per token = calls × one call. Pipeline rows count only the transfer; waiting for the other stage is the pipeline-wait row.";
+        + "per token = calls × one call. Pipeline rows count only the transfer; waiting for the other stage is the pipeline-wait row."
+        + (same ? "" : " Communication is not shared by more GPUs, so B is compared with A itself.");
     }
 
     function renderTimeline(phase, comparison) {
@@ -4832,7 +4863,6 @@
     }
 
     function layerTip(phase, comparison, row) {
-      const factor = comparison.mode === "scaling" ? comparison.factor : 1;
       const lines = [`${row.label} (A stage S${row.stage_a}, B stage S${row.stage_b})`];
       for (const [side, letter] of [["a", "A"], ["b", "B"]]) {
         const metrics = row[side];
@@ -4844,9 +4874,10 @@
         lines.push(`${letter}: ${fmtUs(metrics.total_us)} µs (${parts})${wall ? `; ${wall}` : ""}`);
       }
       if (row.change_us != null) {
-        lines.push(factor === 1
+        lines.push(comparison.mode === "same_gpus"
           ? `B − A: ${fmtSigned(row.change_us)} µs`
-          : `Linear target ${fmtUs(factor * row.a.total_us)} µs; B − target: ${fmtSigned(row.change_us)} µs`);
+          : `Ideal for B ${fmtUs(row.b.total_us - row.change_us)} µs (compute × ${comparison.factor}, the rest as in A); `
+            + `B − ideal: ${fmtSigned(row.change_us)} µs`);
       }
       return lines.join("\n");
     }
@@ -4860,7 +4891,7 @@
         legend.replaceChildren();
         return;
       }
-      const factor = comparison.mode === "scaling" ? comparison.factor : null;
+      const scaling = comparison.mode === "scaling";
       const peak = Math.max(1, ...layers.flatMap((row) => [row.a?.total_us || 0, row.b?.total_us || 0]));
       const top = peak * 1.08;
       const height = (value) => `${(100 * value / top).toFixed(3)}%`;
@@ -4881,7 +4912,9 @@
         const boundary = moved.length
           ? `<b class="layer-stage"><em>${escapeHtml(moved.map(([letter, stage]) => `${letter} S${stage}`).join(" · "))}</em></b>`
           : "";
-        const target = factor && row.a ? `<b class="layer-target" style="bottom:${height(factor * row.a.total_us)}"></b>` : "";
+        const target = scaling && row.b && row.change_us != null
+          ? `<b class="layer-target" style="bottom:${height(row.b.total_us - row.change_us)}"></b>`
+          : "";
         return `<div class="layer-group" title="${escapeAttr(layerTip(phase, comparison, row))}">${boundary}${column("a", row.a)}${column("b", row.b)}${target}`
           + `<span class="layer-tick">${index % every === 0 ? escapeHtml(row.label) : ""}</span></div>`;
       });
@@ -4893,7 +4926,7 @@
       legend.innerHTML = used.map(([name, cls]) => `<span><i class="swatch ${cls}"></i>${escapeHtml(name)}</span>`).join("")
         + `<span><i class="swatch side-a"></i>Left, lighter: A · ${escapeHtml(comparison.a.parallel)}</span>`
         + `<span><i class="swatch side-b"></i>Right: B · ${escapeHtml(comparison.b.parallel)}</span>`
-        + (factor ? '<span><i class="swatch dashed"></i>Linear-scaling target for B</span>' : "")
+        + (scaling ? `<span><i class="swatch dashed"></i>Ideal for B: compute × ${comparison.factor}, the rest as in A</span>` : "")
         + (stageLines ? '<span><i class="swatch stage"></i>Pipeline stage boundary</span>' : "");
     }
 
@@ -4923,10 +4956,10 @@
         ];
         return `<tr>${cells.join("")}</tr>`;
       });
-      const factor = analysisComparison?.mode === "scaling" ? analysisComparison.factor : 1;
+      const scaling = analysisComparison?.mode === "scaling";
       document.getElementById("analysis-layer-sub").textContent = "Time each decoder layer adds to a generated token, averaged over all GPUs; "
         + "with the outside row the layers add up to the time per token. Hover a time for its wall time on the stage's GPUs. "
-        + (factor === 1 ? "Δ = B − A" : `Δ = B − ${factor}×A (linear scaling)`);
+        + (scaling ? `Δ = B − ideal (compute × ${analysisComparison.factor}, the rest as in A)` : "Δ = B − A");
       const totals = [
         [`Decoder layers (${layers.length})`, phase.layer_sum],
         ["Outside the layers", phase.non_layer],
@@ -4935,7 +4968,7 @@
       const footer = totals.map(([label, sides]) => {
         const a = sides.a;
         const b = sides.b;
-        const change = b.total_us - factor * a.total_us;
+        const change = b.total_us - (sides.ideal ?? a).total_us;
         return `<tr class="total-row">${[
           cell(escapeHtml(label)),
           cell(""),
@@ -4953,7 +4986,7 @@
       const peak = Math.max(0, ...rows.map((row) => Math.abs(row.change_us)));
       document.getElementById("analysis-kernel-sub").textContent = comparison.mode === "same_gpus"
         ? "µs per generated token, averaged over the GPUs; Δ = B − A"
-        : `µs per generated token, averaged over the GPUs; Δ = B − ${comparison.factor}×A (linear scaling)`;
+        : `µs per generated token, averaged over the GPUs; Δ = B − ideal: compute kernels × ${comparison.factor}, communication kernels as in A`;
       const head = "<thead><tr><th>Kernel</th><th>Kind</th><th>A µs</th><th>B µs</th><th>Δ µs</th><th>Calls A</th><th>Calls B</th><th>Status</th></tr></thead>";
       const body = rows.map((row) => `<tr>${[
         `<td class="name" title="${escapeAttr(row.name)}">${escapeHtml(row.name)}</td>`,

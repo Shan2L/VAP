@@ -345,10 +345,13 @@ class TraceAttributionTests(unittest.TestCase):
         )
         self.assertEqual(result["mode"], "scaling")
         decode = result["phases"]["decode"]
-        self.assertAlmostEqual(decode["change"]["comm_xfer"], 20.0)
+        # More GPUs share the compute; communication stays A's in the ideal.
+        self.assertAlmostEqual(decode["change"]["comm_xfer"], 10.0)
         self.assertAlmostEqual(decode["change"]["gemm"], 0.0)
-        self.assertAlmostEqual(sum(decode["change"].values()), 100.0 - 160.0 / 2)
-        self.assertAlmostEqual(decode["layers"][0]["change_us"], 100.0 - 160.0 / 2)
+        self.assertAlmostEqual(decode["ideal_us"], 140.0 / 2 + 20.0)
+        self.assertAlmostEqual(decode["best_speedup"], 160.0 / 90.0)
+        self.assertAlmostEqual(sum(decode["change"].values()), 100.0 - 90.0)
+        self.assertAlmostEqual(decode["layers"][0]["change_us"], 100.0 - 90.0)
         self.assertAlmostEqual(decode["scaling_efficiency"], (160.0 / 100.0) / 2)
 
     def test_wait_and_transfer_do_not_depend_on_clock_offset(self) -> None:
@@ -408,9 +411,9 @@ class TraceAttributionTests(unittest.TestCase):
         )
         report = render_compare_markdown(result)
         self.assertIn("# TP4 (A) vs TP8 (B)", report)
-        self.assertIn("communication 0.01 ms → 0.03 ms (+0.02 ms)", report)
-        self.assertIn("| Communication | 10.0 | 30.0 | 20.0 |", report)
-        self.assertRegex(report, r"\n\| L0 \| S0/S0 \| 160.0 \| 100.0 \| 20.0 \| ")
+        self.assertIn("communication 0.02 ms → 0.03 ms (+0.01 ms)", report)
+        self.assertIn("| Communication | 20.0 | 30.0 | 10.0 |", report)
+        self.assertRegex(report, r"\n\| L0 \| S0/S0 \| 160.0 \| 100.0 \| 10.0 \| ")
 
     def test_topology_maps_communicators_to_parallel_dimensions(self) -> None:
         topology = Topology(tp=2, pp=2)
